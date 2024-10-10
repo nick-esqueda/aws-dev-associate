@@ -1,0 +1,431 @@
+---
+INFO FOR TRAINING
+
+check secrets.txt for login URLS and AWS CLI access keys 
+
+---
+IAM USERS/ACCESS KEYS
+
+Long-term credentials = not changed/rotated automatically/regularly
+the user has to MANUALLY change it 
+
+IAM User can only have max of 1 username & 1 password
+- password is actually optional, in case of IAM Users created for CLI/apps
+
+One IAM User can have at most 2 access keys
+- 2 access keys + 1 username + 1 password
+- 2 max, so that you can rotate the first access key 
+  - create new one, update your CLIs/apps to the new one, then delete the old one
+
+Once access key is created, can't ever see/get the secret access key again (after 1st sight)
+- have to create a new one, delete old
+
+Root User can create access keys - BUT IT'S BAD PRACTICE
+- should use access keys from an IAM user
+
+IAM Users are the only identity which use access keys & long term credentials
+
+---
+PUBLIC VS PRIVATE SERVICES
+
+"public/private service" refers to *networking only*
+
+public = has publicly accessible endpoints via internet
+private = something that runs within a VPC - only accessible inside that VPC or connected VPCs/entities
+
+permissions are different then networking: a service can be "public" while still preventing all access to it
+
+example: by default, all S3 buckets are "public", but no one has permission to access it except the account root user
+
+---
+NETWORK ZONES
+
+"PUBLIC INTERNET" ZONE
+- devices use the internet as transit to access the aws public zone
+- purely public internet where all devices are/traffic is
+
+"AWS PUBLIC" ZONE
+- different from the public internet (nuanced difference)
+- public services like s3 sit here
+- if a service in the aws "private zone" needs to call s3, then it goes directly to the aws public zone *and does not have to go through the public internet*
+
+"AWS PRIVATE" ZONE
+- VPCs are in the "private" zone
+- VPC = Virtual Private Cloud
+  - exactly like your home network. all devices in the network are private and can comm. with each other directly. 
+  - services in the VPC can't interact with the public internet/vice versa unless configured to do so.
+
+---
+AWS REGIONS, EDGE LOCATIONS, AVAILABILITY ZONES
+
+REGIONS 
+- each regions has a "copy" of all AWS infrastructure. all of its compute, storage, DB, etc. services are inside of each region.
+- some countries have multiple AWS regions, others have 1. depends on the country's customary requirements, etc.
+- regions are spread out geographically. helps with designing resilient/fault tolerant architecture (think natural disasters)
+  - regions are designed to be 100% isolated
+- when interacting with an EC2 instance, you interact with an EC2 instance *in a specific region* 
+  - EC2 in N. Virgina is different from EC2 in Sydney, AU.
+- all regions are connected together using high speed networking links
+- some few services are global (like IAM), while most are specific to a region (have to choose a region when using an AWS service)
+- 3 main benefits of regions
+  - geographic separation/fault tolerance
+  - geopolitical separation
+    - different governance rules apply to your data depending on what region the data's in
+  - location control
+    - performance benefits (think netflix & edge locations for 4k video delivery)
+
+EDGE LOCATIONS
+- "local distribution points"
+- much smaller than regions
+- mainly only content distribution services and edge computing
+- helps for low latency distribution of content
+  - longer distance = slower data transfer, basically
+
+AVAILABILITY ZONES (AZs)
+- each region has X number of AZs. (could be 2, 3, 4, etc.)
+  - example: ap-southeast-2a, ap-southeast-2b, ap-southeast-2c
+  - more granular than region, so have more control over service locations
+- think of an AZ as data center
+  - ! technically it's NOT just 1 data center, could be multiple DCs in an AZ.
+  - AWS does not give insight into how many physical locations/DCs are in an AZ
+  - AZ is somewhat of an abstraction of a DC
+- isolated: if a fire or power outage in one AZ happens, your services running in the other AZs aren't affected
+- services can be spread out between multiple AZs to make them resilient
+- AZs in each region are connected with high-speed redundant networking
+
+RESILIENCE DEFINITIONS
+
+globally resilient
+- one product whose data is replicated across multiple regions on the globe
+- ex: IAM, ROUTE53
+- multiple regions can fail without causing the service to fail
+  - the entire world has to fail in order for the service to fail
+- you don't choose a region for these services - it's global
+
+region resilient
+- services operating in a single region with 1 set of data in a region
+  - an RDS in sydney is a *different service* than RDS in virginia
+- data may be replicated across AZs in that region
+- if the region as a whole fails, then the service will fail
+
+AZ resilient
+- service will fail when the AZ it's in fails
+- more prone to failure
+
+---
+VPC - Virtual Private Cloud
+
+like a private home network (private by default)
+  - services in the VPC can talk to each other, but NO PUBLIC ACCESS BY DEFAULT (in & out)
+  - EXCEPTION: the default VPC is public by default
+it's a virtual network in AWS
+
+VPCs are per region 
+- regionally resilient
+VPC is within 1 account and 1 region
+VPCs can span between mutliple AZs within a region
+
+can be used to connect AWS private networks to on-prem networks
+- also connect to other cloud platforms for multi-cloud deployment
+
+2 TYPES OF VPC
+  1. DEFAULT VPC
+  - makes services public 
+  - ! maximum 1 default VPC per region (could be 0 if you delete it)
+    - default VPC shouldn't be deleted though - some service rely on it existing
+  - auto-configured by AWS - configured the same way every single time in every region
+    - less flexible that custom VPCs tho
+  - only gets 1 cidr range - 172.31.0.0/16 (ALWAYS THIS RANGE - EVERY REGION)
+  - VPC CIDR - the range of IPs that the VPC is allocated
+    - it's split up into multiple subnets that span across each AZ
+      - one /20 subnet per AZ - each subnet 
+        - 16 /20 subnets can fit into the /16 VPC CIDR range - enough IPs for 16 AZs
+  - 1 subnet per AZ 
+    - this is set on creation and cannot be changed
+    - 1 subnet == availability zone == "data center" (loosely)
+  - comes with an IGW (internet gateway), default SG (security group), and NACL (network access control list)
+    - all above limit incoming/outbound traffic
+  - ! any service placed in a default VPC subnet get assigned a public IPv4 address!
+  2. CUSTOM VPC
+  - can have N # of custom VPCs in a region
+  - 100% of the configuration is on you
+  - 100% private by default
+    - no way to communicate in/out of the private custom VPC without configuration
+  - can have many cidr ranges
+
+you can delete and recreate the default VPC
+without any VPC in a region you *can't launch any instances*
+
+
+---
+EC2 FUNDAMENTALS
+
+EC2 is IaaS - Infrastructure as a Service
+- you manage the OS and upwards of the infrastructure stack. AWS manages everything below the OS part
+basically the default starting point of any compute requirements in AWS
+
+the unit of consumption is the instance
+
+an EC2 instance is just a VM/OS
+
+private service by default - in the "private AWS zone"
+have to configure public access
+- the VPC it's running in has to allow that public access 
+  - for default VPCs, already configured for you (default VPC public by default)
+
+AZ resilient - instance fails if AZ fails 
+- launched into one VPC subnet/1 AZ
+
+some size/capability decisions can be made after instances is already launched
+
+storage:
+- local on-host storage (EC2 host the instance runs on)
+- EBS volume
+
+on-demand billing
+
+CHARGES PER INSTANCE STATE:
+running:
+- CPU
+- RAM
+- storage
+- network
+stopped:
+- storage
+  - disk space & EBS volumes are still allcoated to the instance, even if stopped
+terminated:
+- *no charges*
+- ? EBS volume still charged when detached from terminated instances?
+
+AMI (Amazon Machine Image):
+- image of an EC2 instance
+- can create AMIs from an EC2 instance
+- attached permissions:
+  - public: everyone allowed to use the image
+  - owner: owner has implicit permissions to use it
+  - explicit: owner grants access to specific AWS accounts to use it
+- boot volume:
+  - C drive in Windows, root volume in linux - drive that boots the OS
+- block device mapping:
+  - links the volumes the AMI has and how the OS sees them
+    - like which volume is the root, and which is a data volume
+
+CONNECTING TO EC2:
+- windows: RDP (remote desktop protocol) - port 3389
+- linux: SSH - port 22
+- process to connect to windows is slightly different from linux
+- use a key pair to connect to the instance
+  - private part: can only download this ONCE - keep it safe
+  - public part: AWS places it on the instance on creation
+
+MISC FROM DEMO:
+- .ppk private key format - use if using PuTTY terminal or using older version of windows
+- even if security group allows all SSH traffic from public internet, you can only access it if you have the SSH private key
+
+
+---
+S3 FUNDAMENTALS
+
+the "default storage service" in AWS 
+
+global (runs from all aws regions)
+
+public service - can access (with the right permissions) from anywhere on the internet
+runs in the public AWS zone
+
+regional service - data stored in 1 region at rest
+regionally resilient - replicated across AZs in a region
+
+can cope with unlimited amounts of data.
+
+storage examples: movies, audio, photos, large text data, large data sets
+
+object key = name of the object
+object value = the content being stored (images, video, etc.)
+
+bucket data ALWAYS stays in 1 region, unless you configure it to move.
+this allows control over the laws that govern the data. (data sovereignty)
+
+! bucket names have to be GLOBALLY unique - no other account can have that bucket name.
+
+! buckets can hold an UNLIMITED # OF OBJECTS - "infinitely scalable"
+
+! there are no "folders" in S3 
+  - objects merely have a key of "/folder/file.jpg"
+  - the UI will still present it as folders though.
+  - "folders" are also called "prefixes" ("/folder") in the above example
+  - S3 is NOT a file system, or block storage 
+    - ! S3 has no conecept of file types. they are just objects with a "key" of "image.jpg"
+  - all objects are stored on the root level.
+
+unchecking the "block all public access" option still does NOT mean the objects are public
+  - this is b/c S3 buckets are private by default
+  - you have to configure the permissions to allow public access still
+
+REMINDERS:
+- bucket naming rules:
+  - 3-63 characters. all lower case. no underscores.
+  - must start with lowercase letter or number
+  - cannot be formatted like an IP address
+- accounts can only have 100 (soft limit) or 1000 buckets (hard limit)
+  - can get more than 100 buckets through support requests
+- objects can be from 0 bytes to 5TB in size
+- S3 is "globally namespaced" - don't have to select a region from the dropdown, but you DO have to specify a region on bucket creation
+  - !! this changed? currently on UI you do choose the region name from the dropdown
+
+
+
+---
+CLOUD FORMATION (CFN) FUNDAMENTALS
+
+allows you to create templates in YAML or JSON that represent cloud resources
+
+"logical resources" = resources in a template
+"physical resources" = actual resources created by AWS
+it's CFNs job to keep the logical and physical resources in sync
+
+a "stack" contains all the logical resources from the template
+stacks are "living"/active representation of the template
+
+templates can be source controlled - people can make change requests to them to update the infra, etc.
+
+when you create a stack from an uploaded template, CFN will create an S3 bucket for that template. uses S3 behind the scenes
+
+
+
+---
+CLOUD WATCH FUNDAMENTALS
+
+Core product - support service used by almost all other AWS services
+
+collects and manages operational data
+
+public service
+can capture metrics from outside of AWS via cloudwatch agents
+- ex: on-prem servers, other cloud platforms
+
+3 MAIN JOBS
+1. Metrics
+  - data related to aws products, apps, on-prem services
+  - some metrics are collected "natively"/by default for AWS products. ex: EC2 CPU
+2. Logs
+  - allows for collection of any type of logs
+3. Events
+  - if an AWS svc does something, a cloudwatch event is generated which allows for action
+
+Namespace = container for data
+- all AWS data goes into the "AWS/{service}" namespace
+  - reserved for AWS - can't use this naming convention
+
+Metric = collection of related data points ordered by time
+- a cloudwatch metric IS NOT for 1 specific instance.
+  - ex: a "CPU Utilization" metric can pull from 5 different EC2 instances' CPU usage
+
+Datapoint = just a measurement of data at a certain time
+- 2 values: Timestamp, and Value
+
+Dimension = used to separate datapoints for different "things" or "perspectives" within the same metric
+- sent with datapoints
+- can be used to monitor specific instances for example
+  - EC2 sends the instance ID dimension with each data point
+
+Alarms:
+Linked to a Metric, and can do things based on metric values
+2 state: OK and ALARM
+  - also "insufficient data" - when first created
+can trigger an action if alarm goes into the alarm state (ex: send SNS email notification)
+billing alarms are alarms
+
+---
+High Availability (HA) vs. Fault Tolerance (FT) vs. Disaster Recovery (DR)
+
+High Availability = Focused on maximizing uptime ONLY
+Fault Tolerance = Focused on continued operation THROUGH FAILURES of multiple components
+Disaster Recovery = Planning for when HA & FT fails
+
+FT is *very* expensive and complex to implement
+HA is less intense but can still be expensive.
+
+Analogies:
+- HA = 4x4 vehicle that has a spare tire for quick recovery
+- FT = airplane systems that are duplicated so it can still work through failure
+- DR = the parachutes for the airplane crew & passengers
+
+DON'T MIX UP HA AND FT - it can cost lives.
+
+
+---
+ROUTE53 FUNDAMENTALS
+
+Global service - single DB distributed worldwide
+Globally resilient
+
+2 FEATURES:
+1. Can register domains
+  - R53 has relationships with all major domain registries (TLD registries - .com/.io/etc)
+    - each TLD registry hosts the zone files for .com/.io/etc.
+2. Can host zones with managed nameservers
+
+note: DNS zones = databases that hold your DNS records (basically)
+zones can hold all or some of the DNS records for one domain
+- (can split a domain into multiple zones and assign ownership of some zones to other admins)
+
+Domain registration process
+1. r53 checks if domain is available
+2. r53 crates a zone file for the domain
+3. r53 allocates name servers for that zone 
+  - usually 4 for each zone, distributed globally
+4. communicates with TLD registry & adds the NS records in the zone file for the TLD (.org/.com)
+  - the NS records point to the AWS nameservers your zone is on
+  - this makes the nameservers "authoritative"
+
+HOSTED ZONES
+zone files/zones are called "hosted zones" in AWS
+- "hosted zone" because zone files are automatically hosted on nameservers
+- AWS always puts your zones on 4 of it's nameservers, hosted globally
+kind of viewed at as DNS-as-a-Service
+
+hosted zones can be public or private
+- logically, AWS nameservers are hosted on the public part of AWS
+- private hosted zones are hosted and only accessible in a VPC
+  - for sensitive DNS records
+
+if you delete & recreate a hosted zone for a domain in AWS, you get 4 brand new nameservers to host the zone - different from the original nameservers
+- you can reassign it to the earlier nameservers by modifying the settings in AWS console
+
+---
+MISC DNS NOTES
+
+13 DNS root servers exist
+- managed by 12 large organizations (like verisign and NASA)
+- IANA alone manages the DNS root zone though
+
+registry = an organization that maintains the zones for a TLD (.org/.com/.etc)
+registrar = organization that sells domain names to the public
+- example: GoDaddy
+- partners with TLDs
+- communicates DNS changes to the registry
+registrant = the person who registers a domain name (public people)
+- registrants manage their DNS settings through their registrar
+
+DNS records are also called "recordsets" in AWS 
+- recordsets are similar to records, but not exactly. 
+- recordset = group of DNS records of the same type (? confirm)
+
+DNS record types:
+A - points to ipv4 address
+AAAA - points to ipv6 address
+CNAME - points to another DNS name
+  - ! CANNOT point to an IP address (test question)
+NS - name server record - delegates control of authoritative DNS query answers
+  - points to a nameserver that a zone file is hosted on
+MX - mail exchange - used to point to a mail server for the domain
+  - this is how email works
+TXT - commonly used to prove ownership of a domain
+  - can technically hold any text data
+
+TTL: numeric value set on DNS records
+- specifies how long records can be cached on DNS resolvers (in seconds)
+  - this allows DNS resolvers to respond to clients with "non-authoritative" answers to DNS queries
+- some resolver servers can be configured to ignore TTL values
+- sometimes leads to caching issues if changing DNS records/etc. - resolvers used cached values instead of pointing to the newest record's value (e.g. ip address)
