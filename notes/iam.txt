@@ -1,0 +1,297 @@
+---
+IAM, ACCOUNTS, AND AWS ORGANIZATIONS
+
+---
+IAM IDENTITY POLICIES
+
+AWS entities start off with NO ACCESS AT ALL (except the root user)
+
+identity policies:
+- policies used by an AWS identity to determine access for certain resources
+- policies are just JSON documents
+- can have many "statements"
+
+statement fields:
+- SID: Statement ID - optional field to specify what the statement does (human readable)
+- effect: either "Allow" or "Deny"
+- action: what action you want to perform
+  - i.e. adding an object to a S3 bucket
+- resource: the resource you want to act against
+  - i.e. S3 or EC2
+
+!! overlapping policies: multiple policies get merged together when AWS looks to see if an identity can perform an action
+- IAM users policies, group policies, resource policies, etc. get merged 
+PRIORITY:
+1. explicit DENY
+  - always takes priority, even over explicit ALLOWs
+2. explicit ALLOW
+3. implicit DENY
+
+inline policies: assigned directly to entities
+- individual JSON policies
+- usually used for exceptional/special access rights for 1 identity (blocking a dumb dev)
+managed policies: one JSON doc. can be assigned to many users (3-300 IAM users)
+- should default to use managed policies
+
+---
+IAM USERS AND ARNS
+
+IAM User: identity used for anything requiring long-term AWS access
+- usually humans, applications, or service accounts
+- if you can picture ONE thing that needs access, use an IAM user.
+
+principal: the thing requesting to interact with resource.
+
+IAM users authenticate with IAM using username/password, or access keys.
+- both are long term credentials
+- after authentication, the user becomes an "Authenticated Identity"
+- AWS will know what policies apply to Authenticated Identities
+- once that user tries to perform actions, AWS can check if its AUTHORIZED to do so using all policies involved
+
+ARN = amazon resource name
+- refers to either single or groups (*) of resources
+- globally unique across accounts for a single resource
+- FORMAT: arn:partition:service:region:account-id:resource-id
+- FORMAT: arn:partition:service:region:account-id:resource-type/resource-id
+- FORMAT: arn:partition:service:region:account-id:resource-type:resource-id
+- if you see "::" it just mean that part doesn't need to be specified (like for global services, like S3)
+  - it is not the same thing as "*"
+
+QUIZ:
+arn:aws:s3:::catgifs
+- refers THE BUCKET, but not objects inside the bucket itself
+arn:aws:s3:::catgifs/*
+- refers to the objects IN THE BUCKET, but not the bucket itself
+
+FOR TEST:
+- max 5,000 IAM Users per account
+- One IAM User can be a member of max 10 groups
+- if need more than 5,000 users, you can user IAM roles or Identity Federation
+
+---
+IAM GROUPS
+
+just containers for IAM users - only to make managing IAM users easier
+! cannot log in to groups - they have no credentials
+
+1 IAM user can be a member of multiple groups (max 10)
+no group size restrictions - you could have the max 5000 IAM users all in one group theoretically
+! max 300 groups per account (but can raise support ticket for more - soft limit)
+
+can attach inline & managed policies to the groups.
+- the policy will be applied to all users within it
+- the user's inline policies/other policies will all be merged with the group policy
+
+! there is no native "all users" group
+
+! cannot nest groups
+
+! groups are NOT a "true identity"
+- they can't be referenced as a principal in a policy
+- e.g. resource policies cannot grant access to an IAM group - no way to refer to them
+  - background: resource policies can refer to certain IAM users and grant access
+
+---
+IAM ROLES
+
+another type of AWS identity besides IAM Users
+
+*roles represent a level of access inside an AWS account*
+(as opposed to representing a single identifiable entity)
+
+use IAM roles when there is NO single identifiable principal
+used on a temporary basis
+- roles are "assumed" - you BECOME that role temporarily, then stop
+
+could use roles to address the 5,000 IAM User limit
+- scales to 100,000,000's of accounts
+- ! test might mention app with 1MM user scenario - IAM roles help in this scenario
+
+roles can have policies attached to them just like Users
+trust policies - grants/denies identities the ability to assume the role
+permissions policies - grant/deny permissions (like normal policies for IAM Users)
+
+when a role gets assumed by an identity (assuming the trust policy allows it) a set of temporary security credentials is generated
+- similar to access keys, but time limited
+- the principal has to re-assume the role once the time limit is up to get credentials again
+- STS creates the temp cred.s using the sts:AssumeRole operation
+  - STS = secure token service
+
+roles can be referenced in resource policies - they are a "real identity" unlike groups
+
+roles can be used within AWS organizations to access different AWS accounts
+
+USE CASES FOR ROLES
+
+  AWS service can use roles, since they need access to perform actions on other resources inside your AWS account
+  - this avoids setting hardcoded access keys in your AWS Lambda code, for example
+  - the runtime env will get the security credentials from STS using sts:AssumeRole
+  - role is useful here because 1-100 copies of the Lambda function might be running, we don't know the # of principals
+
+  roles can be used to provide emergency access
+  - "break glass" situation - key behind glass with "break glass for key" note
+  - you can tell when it's been used or not/etc. - auditing
+
+  roles can be used when your org is using microsoft AD with >5,000 staff members
+  - can use roles when you want to reuse existing identities for use within AWS (external accounts CAN'T be used to DIRECTLY access AWS entities - can't use your instagram account obviously)
+
+  roles are used in identity federation scenarios
+  - allows users to log in to their facebook account, and then assume a role based on that trust with facebook
+  - useful because no AWS cred.s are stored anywhere
+
+  roles can be used in cross-account situations - allows users in 1 account to access resources in a different AWS account
+
+types of roles (to select from when creating a role in console) (a.k.a. trusted entities)
+(this helps create the trust policy for the role)
+- AWS service
+- AWS account
+- Web identity
+- SAML 2.0 federation
+- Custom trust policy
+
+
+TRUST POLICY FOR A ROLE ALLOWING ANOTHER ACCOUNT TO ROLE-SWITCH INTO THIS ACCOUNT
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Principal": {
+                "AWS": "711387134335"
+            },
+            "Condition": {}
+        }
+    ]
+}
+
+---
+SERVICE-LINKED ROLES
+
+IAM role linked to a specific AWS service
+the role permissions are predefined by a service
+AWS services might create/delete the role itself. 
+service might ask you to create one during setup
+can make inside IAM as well
+
+ONLY DIFFERENCE: for service-linked roles, you cannot delete it until it's no longer used/needed by a service. normal roles can be deleted whenever.
+
+you need a policy to allow your IAM user to be able to create a service-linked role
+"iam:CreateServiceLinkedRole"
+
+ROLE SEPARATION
+the PassRole action allows IAM users to pass an existing role to services that may have even more permissions that the IAM user itself.
+  - example: IAM user passing a role to Elastic Beanstalk that can delete EC2 instances while IAM user doesn't have permission to delete instances
+IAM user has to have "iam:PassRole" permissions through a policy
+
+---
+Security Token Service (STS)
+
+generates temp cred.s when "sts:AssumeRole" is invoked (happens when you assume an IAM role)
+
+this svc is under the hood
+
+these cred.s similar to access keys
+- ! these expire, and DON'T belong to the user that assumes the role
+
+a subset of permissions of the role policy can be granted to the credentials itself
+- so can limit the actions the cred.s allow 
+
+cred.s are always requested by an identity (IAM user, or external web entity [federation])
+
+cred.s are created based on the permissions policy
+if the permissions policy changes, then the permissions the cred.s have access to also change
+
+when cred.s expire, then sts:AssumeRole has to be called again
+
+--- 
+AWS ORGANIZATIONS
+
+used for enterprises to manage multiple AWS acct.s
+
+an organization is created from a normal AWS account
+- the organization is not "inside" the acc.t - just had to be created by one, that's it
+- the acc.t that creates the org. is the "management"/"master" acc.t
+
+master acc.t requetss other acc.ts to join the org.
+- these other acc.ts become "member acc.ts"
+can also create acct.s directly within the org
+- "just create the account in the org." - can do this from the mgmt acct
+
+organization root = container for AWS acc.ts at the top of the org structure
+- can have multiple member or mgmt accts.
+- can also contain other containers
+  - these are called OUs (organizational units)
+  - can nest OUs inside of each other
+- organizational root is NOT the AWS root account - 2 separate ideas
+
+member acct.s have their billing info removed when added to an org
+- bills are delegated to the org root/management acct (a.k.a. "payer acct")
+- "consolidated billing"
+- single monthly bill covering all accounts in the org
+
+discounts regarding reservations & volume usage are pooled in the org
+very useful - all usage/reservations are summed up for the org and discount is applied on that
+(lots of svcs provide discounts for large usage)
+
+best practice: 1 single acct to log in to (mgmt usually) and use roles to connect to the other accts in the org
+- can also have mgmt acct and "login" acct separate - 1 account for IAM logins only
+
+if you create an acct from within the org, a role is auto. created so you can role-switch into that acct from the mgmt acct.
+- if other acct was added to the org from invite, then have to create this role manually before you can start role-switching
+
+TRUST POLICY FOR A ROLE ALLOWING ANOTHER ACCOUNT TO ROLE-SWITCH INTO THIS ACCOUNT
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Principal": {
+                "AWS": "711387134335"
+            },
+            "Condition": {}
+        }
+    ]
+}
+
+
+---
+SERVICE CONTROL POLICIES (SCP)
+
+used within AWS orgs to restrict accts or OUs
+
+SCPs are just another JSON policy document
+
+SCPs do NOT grant any permissions - they just limit/put a boundary on what an acct can do
+
+SCPs can be applied to:
+- root container of the org structure
+- OUs
+- individual accts
+
+SCPs apply recursively downward through the org tree structure
+e.g. OUs inside a higher OU inherit the SCP attached to the parent OU
+(SCPs attached to an acct only affect that one acct though)
+
+the mgmt acct cannot be affected of SCPs - cannot be restricted
+- even if SCPs are applied to the root org container, it doesn't affect the mgmt acct
+- this is why it's a good idea to NOT use mgmt account for spinning up AWS resources
+
+SCPs can limit what acct root users can do
+"you can never restrict what the IAM root user can do in it's acct"
+but by shrinking what the account can do, you effectively reduce what the IAM root can do
+you are "shrinking the account permissions boundaries"
+
+use cases:
+- restricting an acct to only launch EC2 instances in the N. Virginia region
+- restricting an acct to only use a certain EC2 instance size
+
+SCP architectures/setups: allow list vs deny list 
+- default: allow list setup
+- remove the FullAWSAccess policy to get all implicit denies, then explicitly allow the desired services/actions
+- deny list setup has much less admin overhead
+
+note: the FullAWSAccess SCP is automatically assigned to the root container & accts by default
+
+note: you have to have at least 1 SCP attached directly to the OU (usually FullAWSAccess) otherwise AWS will give an error msg
