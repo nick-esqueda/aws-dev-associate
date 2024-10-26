@@ -1,4 +1,3 @@
----
 IAM, ACCOUNTS, AND AWS ORGANIZATIONS
 
 ---
@@ -32,6 +31,11 @@ inline policies: assigned directly to entities
 - usually used for exceptional/special access rights for 1 identity (blocking a dumb dev)
 managed policies: one JSON doc. can be assigned to many users (3-300 IAM users)
 - should default to use managed policies
+
+IAM policy types:
+- AWS managed policies
+- customer managed policies
+- inline policies
 
 ---
 IAM USERS AND ARNS
@@ -213,6 +217,8 @@ an organization is created from a normal AWS account
 - the organization is not "inside" the acc.t - just had to be created by one, that's it
 - the acc.t that creates the org. is the "management"/"master" acc.t
 
+aws doesn't provide any special support for orgs (to help with mergers etc.)
+
 master acc.t requetss other acc.ts to join the org.
 - these other acc.ts become "member acc.ts"
 can also create acct.s directly within the org
@@ -295,3 +301,78 @@ SCP architectures/setups: allow list vs deny list
 note: the FullAWSAccess SCP is automatically assigned to the root container & accts by default
 
 note: you have to have at least 1 SCP attached directly to the OU (usually FullAWSAccess) otherwise AWS will give an error msg
+
+
+---
+CLOUDWATCH LOGS
+
+public AWS service - hosted in public AWS zone
+(usable from in AWS VPC or on-prem)
+
+regional svc
+
+3 WAYS TO INTEGRATE
+- lots of svcs have built-in cloudwatch logs integrations
+  - uses IAM roles/svc roles
+- can integrate with cloudwatch from on-prem using cloudwatch agent
+  - ("unified cloudwatch agent")
+- use AWS SDKs to log directly to CW from your app
+
+log event = just a log - timestamp, and message
+log stream = ordered set of log events from a specific source for 1 thing
+log group = container for similar log streams (ex: all /var/log/messages logs from 3 EC2s grouped together)
+  - log retention & permission settings are config.d at the log group level
+  - metric filters are defined on log group level
+
+metric filters = scans logs for certain patterns and adjusts CW metrics accordingly
+- alarms can be triggered from this
+
+
+---
+CLOUDTRAIL
+
+logs all AWS API calls/activies in an account
+
+Cloudtrail Event = simply 1 action taken on/by a svc
+
+! CT logging is NOT REAL TIME - delivers log files within 15 minutes of activity occurring
+
+90 days history of cloudtrail events stored by default
+- NO COST for 90 days
+
+management events (a.k.a. control plane events) = ex: starting/stopping an EC2, IAM logins
+data events = actions performed on an AWS resource (ex: uploading to a S3 bucket)
+  - not logged by default - because could be very high volume
+
+trail = configuration for cloudtrail
+  - trails are how you to store the cloudtrail info in better places (S3, CWLogs)
+trails track events for THE REGION IT'S IN by default
+trails can cover:
+  - one region
+  - all regions (trails in multiple regions sent to 1 place)
+
+most svcs log their events to the cloudtrail instance in the SAME REGION
+global svcs always log to us-east-1 (N. Virginia)
+- called global svc events.
+! a trail has to enable global svc events to get the logs. otherwise only captures the logs for the region it's in
+- iam, sts, cloudfront
+
+CT trails store logs in S3 by default. can configure a new or existing S3 bucket
+- only charged for the S3 usage
+- compressed json format
+
+can send cloudtrail events to cloudwatch logs - get more features than S3 
+- CWLogs can scan CT events in the S3 bucket and adjust metrics, trigger alarms, etc.
+- main difference btwn S3 & CWLogs = logs are put in a log group and log stream, so additional functionality
+
+organizational trail = a cloudwatch trail that aggregates all events for all acct.s in the org
+- creates trail in every region in every acct in the org
+
+PRICING:
+CWLogs mgmt events across AWS svcs by default for 90 days - free
+1 copy of mgmt events PER REGION (& per acct) to S3 - free
+additional trails - $2 per 100k mgmt events
+data events - $0.10 per 100k data events delivered
+
+Cloudtrail always saves event history (past 90 days) even if you have no trails. trails just allow you to configure what happens to those events/where they get put
+- trail = kinda like a pipeline/feed

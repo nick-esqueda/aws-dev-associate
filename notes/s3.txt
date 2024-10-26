@@ -1,0 +1,78 @@
+---
+S3 SECURITY
+
+s3 is private by default
+
+bucket policy = type of resource policy 
+resource policy = like an IAM identity policy, but attached to resources
+- (inverse of each other)
+- identity policies define what that identity can access
+- resource policies define who can access that resource
+
+only 1 bucket policy per bucket (but can have many policy statements)
+
+huge benefit of resource policies:
+- you can allow identities from ANY account to access the resource
+- note: you can't create identity policies for IAM users outside of an account.
+  - so, you CAN'T grant users outside the account access to an S3 bucket thru ID policies
+- resource policies can specify any user in ANY account and grant/deny access to them
+- can grant anonymous access (don't know who the user/principal is) 
+  - IAM policies can't do this - you can't attach an ID policy to 'nothing'
+
+bucket policies have a "Principal" key in the Statement
+- the principal could be IAM users, AWS accounts, anonymous (unauth.nd to AWS), *, etc.
+- ID policies don't have a Principal property bc it's implied that the principal is the identity using that policy
+
+can block IP addresses in resource/bucket policies
+
+remember: policies get merged.
+- if IAM user trying to access bucket, that user's policy + the bucket policy apply
+  - (same for IAM users outside the bucket acct - the user's + bucket's policy apply)
+- anonymous principles are only restricted by the bucket policy
+  - (bc logically there is no identity policy for anonymous principles)
+
+ACLs
+- legacy - AWS suggests to use bucket policies/ID policies instead
+  - ACLs are inflexible & have simple perm.s only
+  - can kind of ignore they exist
+  - never use ACLs unless you need to
+- ACLs are a subresource of a bucket
+
+Block Public Access feature
+- added to S3 due to PR disasters - lots of data leaks bc users didn't understand S3 security properly - lot of user misconfigurations
+- another security layer in front of the resource policy
+  - "block public access" apply no matter what the bucket policy says
+- applies only to anonymous users, not IAM identities
+- tip: if you grant public access in a bucket policy but it's not working, it's probably because "block public access" is enabled
+
+tradeoffs between identity policies vs resource policies - choice depends on use case
+- res. policies - good for base level permissions on svc
+
+---
+S3 STATIC HOSTING
+
+allows access via HTTP (using web browsers)
+
+must set an index and error document
+- must be html docs bc that's what static hosting delivers
+
+"website endpoint" = url to hit the bucket from the internet (DNS)
+if you want a custom domain, must make bucket name same as domain name
+
+use cases:
+offloading:
+- serve static images S3 instead of serving them from a compute service (ec2)
+  - this will save costs since compute is expensive - s3 isn't
+  - ex: dynamic html doc retrieved from ec2 points to images in s3 bucket
+out-of-band pages:
+- if main server (ec2) is offline for maintenance, can route customers to s3 to get a maintenance page
+  - using another ec2 instance to serve the maintenance page might be an issue, because what if ec2 itself is having issues? better to use s3 scenarios like this[
+
+pricing:
+1. storing data in s3 - GB/month
+2. transferring data out of buckets - per GB charge
+- never charged for transferring in to buckets
+3. data requests (operations) - per 1000 requests
+- concern for static hosting if lot of customers
+free tier:
+- 5 GB storage
