@@ -109,7 +109,7 @@ used on a temporary basis
 
 could use roles to address the 5,000 IAM User limit
 - scales to 100,000,000's of accounts
-- ! test might mention app with 1MM user scenario - IAM roles help in this scenario
+- ! cert test might mention app with 1MM user scenario - IAM roles help in this scenario
 
 roles can have policies attached to them just like Users
 trust policies - grants/denies identities the ability to assume the role

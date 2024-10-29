@@ -76,3 +76,313 @@ pricing:
 - concern for static hosting if lot of customers
 free tier:
 - 5 GB storage
+
+---
+OBJECT VERSIONING & MFA DELETE
+
+versioning is disabled by default
+! once turned on, you CAN'T turn it off
+- you can suspend it, and re-enable, but can't turn off
+  - suspending: "This suspends the creation of object versions for all operations but preserves any existing object versions.
+! you're billed for ALL versions of ALL objs
+- only way to 0 the costs is to delete the bucket & reupload to new bucket w/o vers.ng
+1. disabled (-> enabled)
+2. enabled (-> suspended)
+3. suspended (-> enabled)
+
+objects in s3 buckets have an "id" property
+if vers.ng disabled, "id" = "null" for all objs
+once enabled, objs will get an id
+when modifying an obj, new copy with same key ("name") is created with a new ID, orig. copy is retained 
+you can get certain versions by specifying the ID in the request
+if no ID in req, the latest/current version is returned by default
+
+DELETING W/VERSIONING
+w/o ID specified:
+- s3 creates a "delete marker" which basically hides all versions of the obj
+  - all obj versions are still retained!
+  - QUOTE FROM AWS CONSOLE:
+    - "Deleting the specified objects adds delete markers to them"
+    - "If you need to undo the delete action, you can delete the delete markers"
+- you can delete the "delete marker", which essentially "un-deletes" the obj
+with ID specified:
+- s3 will actually delete the obj version with specified ID
+- most recent version becomes the curr/latest version
+  - if deleting a vers. other than the current vers., the curr vers. stays same (nothing happens besides the selected vers. being deleted)
+- NOTE: everything is "permanent" when vers.ng is enabled
+  - deleting a "delete marker" is PERMANENT
+
+MFA DELETE
+a config for the obj versioning feature
+if enabled, MFA device is required to:
+- delete obj versions
+- change state of mfa delete (i.e. suspending or re-enabling)
+HOW: when calling API, must provide MFA device's serial num + MFA code
+
+
+---
+S3 PERFORMANCE OPTIMIZATION
+
+"Single PUT Upload"
+- default for s3:PutObject uses single data stream to upload to s3
+- (typical downloads from a browser use multiple streams)
+- 1 data stream = slower than multiple data streams
+- if network fails after 4.5 of 5.0 GB are uploaded, then the WHOLE upload fails
+- AWS has max 5GB object upload to S3 using single PUT upload
+  - ... but you shouldn't trust it for anything near 5GB...
+- bad idea for unreliable connections that need to upload to s3
+
+"Multipart Upload"
+- faster
+- data is broken up into multiple parts for upload
+! min data size for multipart is 100MB
+  - you can't use multipart upload if blob is under 100MB
+- no reason not to use it if >100MB - benefits are to great to not use it
+- can have 10,000 MAX parts - each range from 5MB -> 5GB (last part can be smaller than 5MB)
+- each part can fail & be restarted in isolation, instead of restarting the whole thing
+- means much less risk for uploading large data to s3
+- parts upload in parallel. so tranfer rate is increased 
+
+S3 TRANSFER ACCELERATION
+- data enters the closest/best performing AWS edge location
+- from there, it enters the AWS global network
+  - AWS global network:
+    - used to connect regions together
+    - optimized for efficiency
+    - public internet might take strange paths - AWS network takes direct paths
+- benefits of transfer accel. increase as data size or distance increases
+- turned off by default
+- bucket name must be DNS compatible
+  - no periods in bucket name
+- when enabling, you get a DNS endpoint for the faster transfers
+  - have to use that URL for accel.d transfers
+  - resolved to an edge location closest to you
+
+---
+KEY MANAGEMENT SERVICE (KMS)
+
+used by many AWS svcs
+
+regional & public service (AWS public zone)
+
+create, store, manage keys
+operates with both symmetric and asymmetric keys
+does encrypt & decrypt (and others...)
+! keys never leave KMS - keys are meant to be locked inside
+
+! provides FIPS 140-2 (*L2) standard
+- some features have L3 compliance
+- "KMS is a secure and resilient service that uses FIPS 140-2 validated hardware security modules to isolate and protect your keys"
+
+some KMS keys are called CMKs (Customer Master Keys) - old naming convention
+
+keys can be used by you, applications, & aws svcs
+
+"KMS Keys" are just containers for the physical real keys
+- has below fields:
+  - ID
+  - date
+  - policy
+  - desc
+  - state
+
+can generate or import keys
+
+keys themselves are encrypted when stored in KMS
+keys are decrypted before they encrypting/decrypting data
+
+on encrypt request, need to send data + key you want to use
+on decrypt request, do NOT need to specify the key to use
+- the key info is encoded in the cipher text. KMS can tell which one to use
+
+permissions:
+- encrypt, decrypt, key creation, etc. are all SEPARATE permissions
+  - called "role separation"
+  - key administrator has diff perm.s than IAM users that use the key
+    - key admins can delete the key
+
+KMS keys can encrypt MAX 4KB of data
+KMS can generate DEKs (Data Encryption Keys) using KMS keys - GenerateDataKey operation
+DEKs can encrpyt/decrypt data >4KB
+DEKs are linked to the KMS key that created it
+- the DEK knows which key created it
+KMS gives DEKs to the client - YOU or the SERVICE uses the DEK
+- DEKs are NOT stored in KMS
+
+DEK architecture
+1. user requests DEK from KMS
+2. DEK is created (using a KMS key) (GenerateDataKey)
+3. KMS gives user the plaintext DEK and the encrypted DEK
+  - DEK is encrypted using the same KMS key that generated it
+4. user encrypts their data (ex. s3 object) with the plaintext DEK
+5. user discards the plaintext DEK
+6. user stores the encrypted DEK with the newly encrypted data
+when need to decrypt data...
+7. user requests for DEK decryption - send encrypted DEK to KMS
+8. KMS decrypts the DEK using the same KMS key used to generate it
+9. user uses decrypted DEK to decrypt the data
+10. user discards the decrypted DEK
+
+you can encrypt many objects/data with 1 DEK, or use a new DEK for each object/data
+
+default = KMS keys are isolated in a region - CANNOT move a key to different region
+- can't extract a key from the KMS service either
+- KMS aliases are also regional
+multi-region keys can be used (key replicated across regions)
+- relatively new feature
+
+customer owned keys:
+- type 1: AWS managed - created automatically when using a svc that integrates w/KMS
+- type 2: customer managed - created explicitly by customer for application/AWS svc usage
+
+all keys can be rotated 
+- off by default for cust. managed keys
+- on by default for AWS managed keys (you can't turn off)
+- done yearly when turned on
+backing keys are kept so old data can still be decrypted
+
+every key has a Key Policy (resource policy - like S3 bucket policies)
+you must explicitly configure KMS to trust the account that the key is created in via key policy
+- this trust isn't automatic, like it is with resources in other svcs
+- need to do this before granting access to a key via identity policies
+- kinda like the "allow all public access" feature in S3 - gotta do it twice
+- ex. identity policy usually allows encrypt/decrypt for all KMS keys, while the key policy specifies what exact principals are allowed to encrypt, decrypt, create, etc.
+
+Key Policy from demo
+{
+    "Id": "key-consolepolicy-3",
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "Enable IAM User Permissions",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::711387134335:root"
+            },
+            "Action": "kms:*",
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow access for Key Administrators",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::711387134335:user/iamadmin"
+            },
+            "Action": [
+                "kms:Create*",
+                "kms:Describe*",
+                "kms:Enable*",
+                "kms:List*",
+                "kms:Put*",
+                "kms:Update*",
+                "kms:Revoke*",
+                "kms:Disable*",
+                "kms:Get*",
+                "kms:Delete*",
+                "kms:TagResource",
+                "kms:UntagResource",
+                "kms:ScheduleKeyDeletion",
+                "kms:CancelKeyDeletion",
+                "kms:RotateKeyOnDemand"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow use of the key",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::711387134335:user/iamadmin"
+            },
+            "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow attachment of persistent resources",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::711387134335:user/iamadmin"
+            },
+            "Action": [
+                "kms:CreateGrant",
+                "kms:ListGrants",
+                "kms:RevokeGrant"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "Bool": {
+                    "kms:GrantIsForAWSResource": "true"
+                }
+            }
+        }
+    ]
+}
+
+---
+S3 OBJECT ENCRYPTION CSE/SSE
+
+! buckets are not encrypted! objects are.
+- define encryption at the object level
+- ("bucket default encryption" is a different feature, separate)
+- each obj could use diff encryption settings
+
+S3 encryption (CSE/SSE) refers to encryption AT REST. 
+(data is always encrypted in transit, i.e. HTTPS)
+
+CSE = Client Side Encryption
+  - the client encrypts the data before even uploading to S3
+  - client takes all risk and control over encryption
+  - you manage the key, and which key for which obj
+  - not related to S3 at all, technically could do both CSE & S3 SSE
+SSE = Server Side Encryption
+  - client sends plaintext. S3 encrypts the plaintext data.
+
+SSE/encryption at rest is mandatory in S3
+- you can only change what type is used
+
+2 Components to SSE
+1. encryption & decryption (symmetric) processes
+2. actual mgmt of keys
+
+each type of SSE handles the above 2 components differently
+your choice depends on how much you trust S3
+your choice impacts permissions
+multiple types of SSE
+- SSE-C = SSE with Customer-Provided Keys
+  - client generates/manages key, but compute for encyption/decryption is offloaded to S3
+  1. client provides key and plaintext obj
+  2. S3 encrypts the obj
+  3. S3 makes a hash of the key
+  4. S3 discards the key
+  5. S3 stores the hash along with the ciphertext object
+  - you trust that S3 will discard your key and not hold on to it
+- SSE-S3 = SSE with AWS S3 Managed Keys
+  - the default method 
+  - uses AES256
+  - S3 handles both encryption process, AND key generation/mgmt
+  - unique key for each obj
+  1. client just provides platintext obj
+  2. S3 generates an object key
+  3. S3 encrypts the obj with obj key
+  4. S3 encrypts the obj key with the S3 Key
+    - S3 Key is totally invisble to customers, you can't do anything to/with it.
+  5. S3 discards the plaintext obj key
+  6. S3 stores the encrypted obj key and ciphertext obj
+  - you don't have control over keys here
+    - shouldn't use this if compliance requires full control (key access, rotation, etc.)
+  - no role separation
+    - can't restrict full admin users from seeing objs
+- SSE-KMS = SSE with KMS Keys Stored in KMS
+  - you create KMS key (or use default) so you control it, & own permissions on the key
+  - S3 & AWS do key mgmt, S3 does encryption process
+  - S3 requests a DEK (using the KMS key) from KMS for each obj
+  - follows DEK architecture (check earlier notes)
+  - good option bc you have full control over the key/key mgmt
+    - logging/auditing, rotation, role separation, etc.
+  - can restrict full admins from seeing objects by not giving permissions to the KMS key
+
