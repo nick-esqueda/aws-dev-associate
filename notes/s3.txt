@@ -363,7 +363,7 @@ multiple types of SSE
   - you trust that S3 will discard your key and not hold on to it
 - SSE-S3 = SSE with AWS S3 Managed Keys
   - the default method 
-  - uses AES256
+  - uses AES256 (sometimes SSE-S3 is referred to as AES256)
   - S3 handles both encryption process, AND key generation/mgmt
   - unique key for each obj
   1. client just provides platintext obj
@@ -378,11 +378,141 @@ multiple types of SSE
   - no role separation
     - can't restrict full admin users from seeing objs
 - SSE-KMS = SSE with KMS Keys Stored in KMS
-  - you create KMS key (or use default) so you control it, & own permissions on the key
+  - you create KMS key so you control it, & own permissions on the key
+    - OR, you can use an S3 default key. (can't change key policy, set rotations, etc.)
+      - customer managed vs aws managed key
+      - ! don't confuse this with SSE-S3
   - S3 & AWS do key mgmt, S3 does encryption process
   - S3 requests a DEK (using the KMS key) from KMS for each obj
   - follows DEK architecture (check earlier notes)
   - good option bc you have full control over the key/key mgmt
     - logging/auditing, rotation, role separation, etc.
   - can restrict full admins from seeing objects by not giving permissions to the KMS key
+
+---
+S3 BUCKET KEYS
+
+used for improving KMS scalability (and S3 scalability in turn)
+
+before bucket keys (if using sse-kms):
+  each s3 Put causes a call to KMS to make a unique DEK (using the 1 specified KMS Key)
+  - scaled poorly - 1-to-1 for each s3 upload 
+  KMS calls have costs and throttling limits
+  - 5.5k, 10k, or 50k per second across ALL regions 
+  using a single KMS key results in a scaling limit for PUTS per second per key
+after bucket keys:
+  KMS gives a "bucket key" to the S3 bucket. that bucket key is used to make DEKs
+  - the bucket key is TIME LIMITED - new bucket key will be used after time limit
+  - bucket key is generated from the original KMS key
+  this offloads a lot of the work from KMS to S3 (reduces KMS API calls)
+  not retroactive - only affects objs after it's enabled on the bucket
+
+NOTE: KMS CloudTrail events would show the bucket ARN instead of obj ARN
+- b/c KMS is creating a bucket key, not a DEK for an object
+fewer cloudtrail events - b/c KMS used less often, just to make bucket keys
+
+works with S3 data replication across regions
+encryption settings for the obj would also be same for replicated one
+- but, if replicating plaintext obj to a bucket using bucket keys, the obj gets encrypted once replicated to the destination
+
+---
+S3 STORAGE CLASSES
+
+each class offers different storage features/specs
+
+S3 STANDARD
+! Use S3 Standard for frequently accessed data that is important an non replaceable.
+- objs get replicated across AT LEAST 3 AZs in the region
+- objs can be public
+- offers 9 9's of durability
+- content-MD5 checksums
+- CRCs (Cyclic Redundancy Checks) used to detect/fix data corruption
+- billing:
+  - GB/month fee for data storaged
+  - $ per GB charge for transfer OUT
+  - no fee for transfer IN data
+  - price per 1K requests
+  - no min duration, no min obj size
+! if you get 200 OK from S3 API, then you know it was stored durability.
+
+S3 Standard-IA (Infrequent Access)
+! useful for long-lived data, which is important, but accessed infrequently
+- same as S3 except below...
+- about 1/2 cost to store data
+- billing:
+  - per request charge - same as s3 standard
+  - data transfer out - same as s3 standard
+  ! retrieval fee (in addition to transfer out fee!) - per GB data
+  - min duration charge of 30 days (can store objs for 2 days, but get chg.d for 30)
+  - min capacity charge of 128KB per obj
+    - not useful for lots of tiny objects
+
+S3 One Zone-IA (Infrequnt Access)
+! For long-lived, non-critical, replaceable data that isn't accessed frequently
+- same as S3 Standard IA except below...
+- data is only stored in ONE AZ
+  - cheaper storaged for greater risk of AZ failure
+- still 9 9's of durability (ASSUMING THE AZ DOESN'T FAIL)
+  - data still replicated, but only within the one AZ
+
+S3 Glacier - Instant (Instant Retrieval)
+! used for long-lived data, accessed ~1/qtr, with very fast access
+- like S3 Standard-IA, but cheaper storage, more expensive retrieval, longer min.s
+  - want data very infrequently, but want it fast (millisecs) once it's time
+- min duration charge of 90 days
+- costs more if you need to access the data, but less if you don't
+
+S3 Glacier - Flexible Retrieval (Formerly just S3 Glacier)
+! For archival data where realtime or frequent access isn't needed. mins-hrs retrieval
+- 1/6 the cost of data storage compared to S3 Standard
+- same durability/redundancy/replication as S3 Standard
+- "cold objects"
+  - can't be made public
+  - you can see them in console, but those are just ptrs to the objs
+- have to do a retrieval process to get objects
+  - job that S3 has to run
+  - once retrieved, they're stored with S3 Standard class on temp basis
+  - you pay for the retrieval process
+- retrieval options:
+  - expedited (1-5 mins)
+  - standard (3-5 hours)
+  - bulk (5-12 hours)
+  - faster = more $$$
+! first byte latency = mins or hours
+- 40 KB min billing size
+- 90 day min duration billing
+
+S3 GLACIER - DEEP ARCHIVE
+! For archival data that rarely (if ever) needs to be accessed. Hrs/days for retrieval.
+  - i.e. legal/regulation data storage
+- a lot cheaper than S3 glacier flexible retrieval
+- "frozen objects"
+- objs retrieve to S3 Standard-IA
+- retrieval options (much longer than flex retrieval):
+  - standard (12hrs)
+  - bulk (up to 48hrs)
+- 40 KB min billing size
+- 180 day min billable duration
+
+S3 INTELLIGENT-TIERING
+! for long-lived data w/changing or unknown access patterns
+- automated tiering done by S3. moves objs to lower tiers if not accessed in a time range
+- tiers:
+  - freq access (similar to standard)
+    - move to below if 30 days no access
+  - infreq accss (similar to standard-IA)
+    - move to below if 90 days no access
+    - have to configure a prefix or tag in the bucket to be able to move lower
+  - archive instance access (similar to glacier instant)
+    - 90 days no access
+  - archive access (similar to glacier flex retrieve)
+    - 90 - 270 days no access
+    - optional tier
+  - deep archive (similar to glacier deep arch.)
+    - 180 - 730 days no access
+    - optional tier
+- costs:
+  - each tier is same as their similar/equivalent storage class
+  - + monitoring & automation cost per 1k objs
+  - no retrieval fees - the above monitoring/autom.n fee covers it
 
