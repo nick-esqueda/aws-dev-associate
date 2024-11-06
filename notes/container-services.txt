@@ -1,0 +1,184 @@
+---
+ECS (Elastic Container Service)
+
+ECS is to containers what EC2 is to VMs
+
+AWS manages some, or most infra to run containers (pick btwn EC2 mode or Fargate mode)
+
+! ECS only supports Docker standards
+
+Container Definition = info about container you want to run 
+- you specify image location (like ECR), ports exposed, etc
+  - port: used to map the exposed container port through to the fargate IP address
+
+Task Definition = represents self-contained application
+- can have multiple containers/container definition (ex. web app + db containers)
+- wrapper for container definitions
+- specify resources(CPU/memory) to be used by task, networking mode, EC2 mode vs Fargate choice
+- specify Task Role
+- when task is deployed/run in a cluster, an Elastic Network Interface gets created in the VPC
+  - that Interface has a security group. have to make sure it allows access to the app
+fyi: lot of apps have 1 container definition and 1 task definition - 1 to 1
+
+Task Role = role used by task to interact with other aws svcs
+
+Service Definition = how you want the task to scale
+- specify capacity/scaling/HA/restarts for the task
+- spins up new tasks if one fails
+- can deploy a load balancer to distribute btwn tasks in the service once scaled
+- mainly for business critical/prod apps
+! don't have to specify a service. can run a task on it's own w/o service
+
+deploy tasks or services into the ECS cluster
+
+CLUSTER MODES
+each ECS cluster mode determines how much admin overhead you have to worry about 
+both:
+- ECS scheduling & orchestration, cluster manager, and placement engine services
+- pull from registry to deploy & run image
+- gets deployed to a VPC, spread across AZs
+
+EC2 mode:
+! not serverless
+- tasks are deployed to normal EC2 containers
+  - you can see these in your EC2 console
+  - they are literally EC2 inst.s that you have to maintain & manage
+  - you pay for the usage of the inst.s like normal EC2
+  - ECS provisions them, but you manage
+- need to put an ASG (auto-scaling group) in front of the EC2s to scale up/down
+- can use your EC2 reserved instance or use spot instances - helps with $
+
+Fargate mode:
+- serverless
+- don't pay for any EC2s
+  - only for the container resources used, that's it. no host costs or managing hosts
+  - don't have to worry about capacity & availability - handled by fargate
+- AWS has a shared fargate infrastructure
+  - AWS allocates you resources from that pool
+- networking:
+  - fargate tasks are "injected" into your VPC and get network interfaces
+  - works just like any VPC resource
+  - can have public IPs if you configure the VPC for have public access
+
+WHEN TO USE EACH (EC2 vs ECS (EC2) vs ECS Fargate)
+- if you use containers... use ECS.
+  - can use EC2 for basic testing of containers but that's really it
+- large workload, but conscious of $ - EC2 mode
+- large workload, but conscious of admin overhead - Fargate
+- small/burst workloads - Fargate
+  - b/c don't have to pay for an idle EC2
+- batch/periodic workldas - Fargate
+  - b/c don't have to pay for an idle EC2
+
+
+---
+ECR
+
+docker hub, but for AWS
+"managed container image registry service"
+public & private registries
+each registry can have many repositories
+each repository can container many images
+images can have several tags
+- tags must be unique inside repository
+
+public: read-only (pull) - write requires perm.s
+
+private: perm.s required for any read and write
+
+image scanning - basic & enhanced
+- scans for issues within OS and software packages in the container - layer by layer
+
+metrics with CloudWatch
+CloudTrail api actions
+Events -> EventBridge
+
+offers replication of images (cross-region & cross account)
+
+
+---
+KUBERNETES (K8S) FUNDAMENTALS
+
+cluster = highly available cluster of compute resources. organized to work as 1 unit.
+  - a cluster is just a deployment of k8s
+node = VM or physical server. functionas as a "worker" in the cluster.
+  - nodes actually run your containers
+  - each node has at least 2 things - containerd, and kubelet
+containerd = the software for container operations (i.e. the container runtime)
+kubelet = the software agent that interacts with the cluster control plane
+service = abstraction of a pod - "the application" 
+  - (could be many diff pods in reality, but always interacting with "the application")
+ingress = exposes a way into a service
+  - ingress -> routing -> service -> specific pod
+ingress controller = used to provide ingress
+  - arranges for the underlying hardware to allow ingress
+job = ad-hoc job - creates one or more pods until completion
+kubernetes API = used for comm.s btwn control plane and kubelet agent
+control plane = manages the cluster. scheduling, app mgmt, scaling, deploying
+pod = smallest unit of computing in k8s
+  - can hold multiple containers (but usually just 1 - only need >1 when tightly coupled)
+  - pods are *temporary* - not permanent
+kube-proxy = network proxy running on each node
+  - coord.s networking w/control plan
+  - helps implement services 
+  - config.s rules allowing comm.s to/from pods from outside or inside the cluster
+persistent storage (PV) = storage volume - lifecycle goes beyond any 1 pod using it
+
+control plane components:
+- kube-api server = frontend for the control plane. what most things interact thing.
+  - can be horizontally scaled for HA & perf
+- etcd = simple key/value store. acts as a DB for the cluster metadata
+- kube-scheduler = makes sure nodes get utilized effectively - assigns nodes work
+- cloud-controller-manager = provides cloud-specific control logic (AWS, GCP, etc.)
+  - just to link k8s with a cloud service
+- kube-controller-manager
+  - node controller (monitoring & responding to node outages)
+  - job controller (one-off jobs/tasks)
+  - endpoint controller - populates endpoints (links services to pods)
+  - service acc.t & token controllers
+
+
+---
+Elastic Kubernetes Service (EKS)
+
+AWS provided kubernetes - extended to work with AWS really well
+
+EKS can used in these ways:
+- AWS (normal service)
+- AWS Outposts
+  - Outposts = like an on-prem tiny version of AWS
+- EKS Anywhere (allows to create EKS clusters on-prem or elsewhere)
+- EKS Distro = open source version of EKS given by AWS
+
+control plane scales and runs on multiple AZs
+
+integrates with:
+- ECR - container registry
+- ELB - used anytime k8s needs load balancing functionality
+- IAM - integrated for security
+- VPC - for networking
+
+EKS Cluster = EKS Control Plane & EKS Nodes
+
+etcd is distributed across AZs
+
+Node options (check these carefully based on your requirements):
+- self managed = you provision EC2s and manage the life cycle of them, and billed for them
+- managed node groups = EKS handles EC2 provisioning & lifecycle
+- fargate pods = don't have to worry about provisioning, configuring, or scaling
+  - define fargate profiles, so your pods can start up in Fargate
+
+persistent storage for EKS - can use:
+- EBS, EFS, FSX, & others... as a storage provider
+
+Architecture:
+- control plane is deployed to an *AWS managed multi-AZ VPC* (you don't own it)
+- worker nodes deployed to your own VPC
+- comm.s btwn control plane & nodes are usually done via ENI in your VPC
+  - ENI (Elastic Network Interface) is injected into your VPC
+  - this allows the control plane in the AWS managed VPC to comm. with your nodes
+  - i.e. the kubelet service on worker nodes connect with control plane (kube-api) using the ENIs
+- or, can comm with control plane using the public control plane endpoint
+  - cluster admin can be done via this public endpoint
+- consumption of actual app services goes via ingress, config.d in your VPC
+
