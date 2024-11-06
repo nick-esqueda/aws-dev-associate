@@ -1,0 +1,426 @@
+---
+DATABASES
+
+TYPES OF DBS:
+SQL/Relational DBs
+- rigid structure defined before data inserted. schema = the db structure
+- known as "row" databases sometimes (when contrasting to nosql column DBs)
+  - relational DBs are ideal when operating with rows - add/update/delete
+- a.k.a. OLTP database (online transaction processing) 
+  - transaction = ex. orders, contacts, stocks - things that deal with rows & items
+
+NoSQL DBs (umbrella for anything that isn't a relational db)
+1. key/value dbs
+  - very simple. keys have to be unique, value can be ANYTHING.
+  - similar to key/value caching in-memory
+2. wide column store
+  - variation of key/value db
+  - tables have a partition key, optional other keys (composite)
+  - only rule is that the key/composite key for each row must be unique
+  - no rules for attributes/values - can have empty values anywhere
+  - AWS DynamoDB
+3. document DBs
+  - almost like an extension of key/value DBs
+  - each document has an id
+  - structure of documents can be different - no set schema
+    - allows data to evolve over time easily
+    - different versions of documents
+  - DB has insight into each document's structure
+  - good for deeply nested data structures
+  - ex. catalogs, user profiles, etc.
+  - can make powerful queries on deeply nested/complex docs - flexible indexing
+4. column DBs
+  - data stored as columns instead of rows on disk
+    - column values grouped together on disk based on columns
+    - ex. every product name, color, size is grouped together by the col. the data is in
+      - vs. 
+  - bad & very inefficient for transaction style processing (operating on whole rows)
+  - very good for reporting/analytics
+  - AWS Redshift
+5. Graph DBs
+  - relationships btwn nodes are defined & !stored in the DB with the data!
+    - ... vs. calculating the relationship on each query (relational DBs)
+  - nodes have key/values
+  - relationships a.k.a. edges - these point in a certain direction
+  - relationships can also have key/value data attached to them
+    - ex. start date of an employees (Bob :works_for Company ABC - startDate:10/21/20)
+  - social media, HR systems
+
+
+---
+DATABASES ON EC2
+
+aka "self-managed"
+bad idea - benefits to you have to outweight the fact that it's a bad idea
+
+2 Architectures
+- 1 EC2 instance, holds all application layers: web server, application, DB
+- 2 EC2 instances - 1 for DB, 1 for web server + application
+  - introduces a dependency: reliable connection from app to DB
+  - small +$ for communication btwn the instances
+
+Reasons:
+for all reasons, ask - why would you/the client need this?
+- need access the OS the DB is running are
+- advanced DB option tuning (DBROOT access)
+- DB or DB version that AWS doesn't provide
+- specific OS/DB combo AWS doesn't provide
+- architecture AWS doesn't provide (replication/resilience)
+- decision makers "just want it"
+
+Reasons NOT To:
+- admin overhead - OS/DB upgrades, patches, etc.
+- backups/DR management
+- EC2 is in a single AZ - if AZ/EC2 fails, DB access fails.
+- miss out on great AWS DB features 
+- EC2 is either ON or OFF. not serverless
+- no easy scaling. limited ability to scale
+- setting up replication - requires: skills, time, monitoring & effectiveness
+- performance - AWS svcs are optimized
+
+
+---
+RDS ARCHITECTURE
+
+"Database SERVER as a Service"
+- not technically DBaaS - DBaaS just gives you a database for $
+- can have multiple databaseas on one DB Server/RDS instance
+
+db engines: mysql, mariaDB, postgresql, oracle, microsoft sql server
+- some are FOSS, but others aren't. ! licensing implications!
+
+Amazon Aurora is a DIFFERENT product, but a lot like RDS
+
+RDS manages hardware, OS, installation, maintenence of DB engine
+
+you have NO access to OS or SSH!
+- (theres a variation of RDS though that gives you some access - RDS Custom)
+
+ARCHITECTURE
+must be deployed in a VPC
+subnet group - what subnets of yours in diff AZs that RDS can use
+- this is how RDS determines which subnets to put DB inst.s into
+- useful b/c you may have mult. subnets in each AZ - may want to dedicate certain subnets to handle DB inst.s only
+High Availability/Multi-AZ option:
+- RDS sets primary inst. in 1 subnet, and standby in another subnet (in subnet group)
+you SHOULD put RDS in a private subnet/private subnet group
+- but you CAN make RDS public by using a public subnet and allowing public access
+- frowned upon though (security)
+you could use the same DB subnet group for multiple RDS inst.s, but you're limited to using the same defined subnets
+- to split inst.s between different sets of subnets, then need another subnet group
+- good practice - 1 DB subnet group for each RDS deployment
+
+1 RDS Instance can have >=0 databases
+- by default, RDS does not create a DB when creating an instance (unless told to)
+each RDS instance has DEDICATED EBS storage (per inst.!)
+- not same as Aurora 
+data is replicated from primary to standby using Synchronous Replication 
+- (as soon as received by primary)
+or, can also have read replicas
+read replicas:
+- uses Asynchronous Replication
+- RRs can be in other regions to help with read load or DR (disaster recovery)
+
+RDS does backups & snapshots - saves to S3
+! it's an AWS managed S3 bucket - you do not see it!
+if using multi-AZ mode, backups are done on the standby instance, so no perf impact
+
+VPC security group = firewall for the DB (within the subnet). allocated to each inst.
+- this is how you control DB inst. access
+- sec. group surrounds the network interfaces of the DB & controls access
+
+COSTS:
+you see an hourly rate, but it's billed per second
+1. instance size & type
+2. multi-AZ or not
+3. per GB monthly storage & amount
+  - note: storage is based on EBS
+4. data transferred in/out of the DB instance
+5. backups & snapshots
+- free snapshot storage - if have 2TB of storage, then 2TB of snapshots for free
+  - (since you already pay for the 2TB of storage)
+  - any more snapshot storage is billed GB per month
+6. licensing
+- can pay for a license included with RDS, or bring your own license
+
+
+---
+RDS MULTI-AZ - INSTANCE AND CLUSTER
+
+originally, only had "multi-AZ"
+- now called Multi AZ - Instance deployment
+- think "Multi AZ - Instance Deployment" when you just hear multi-AZ
+
+Multi AZ - Instance Deployment
+- primary inst. in 1 AZ, standby inst. in another AZ
+- standby inst. cannot be used for reads or writes. only for failure scenarios.
+  - "hidden"
+- synchronous replication to standy inst.
+  - synchronous = data saved to primary AND replicated to standby before fully committed
+- the DB CNAME/DNS endpoint always connects to primary
+  - can't connect to standby. only comes in use in primary inst. failure scenarios
+- backups occur from the standby -> S3 (replicated to other S3 AZs in that region)
+  - no extra load on the primary for backups
+- failure scenario:
+  - standby becomes the new primary
+  - RDS changes the CNAME endpoint to point to standby inst. (DNS records modified)
+  ! failure is not immediate! will take 1m-2m for requests to hit the new primary
+    - can disable DNS caching on clients so requests hit new primary immediately
+- not free tier - b/c extra cost for standby replica
+! only 1 standby replica
+- same region only (diff AZs in same regions)
+- failure scenarios: AZ outage, primary failure, manual failure, instance type change, and software patching
+  - can use failover to move consumers to standby inst., patch the 1st inst., then move back
+
+Multi AZ - Cluster Deployment
+- 1 writer inst. and 2 reader inst.s
+  ! different than aurora cluster - can have >2 read inst.s w/aurora
+- all write & read inst.s are in separate AZs
+- sync.s repl.n to reader inst.s
+  - considered "committed" when only 1(+) reader finishes saving data
+- readers are usable
+- writer is like the primary in Multi AZ Instance mode - can read & write
+- your app must understand that can't write to some inst.s
+- each inst. has it's own local storage
+- access cluster using few endpoints:
+  - cluster endpoint (like DB CNAME in Multi AZ Instance mode)
+    - points at writer, used for read + writes + admin
+  - reader endpoint
+    - points at any available reader inst. (can include writer inst., but usually read)
+  - instance endpoints
+    - point at specific instance - for testing/fault finding only. not for general use
+- faster hardware than Instance Dep. mode - Graviton + local NVME SSD storage
+  - writes to local storage, then flushed to EBS storage
+- faster failover (~35s vs 1m-2m)
+- aurora allows for even more scalable reads
+
+---
+RDS AUTOMATIC BACKUP, RDS SNAPSHOTS AND RESTORE
+
+Two Types of Backup/Restore Technology
+- both use AWS managed S3 buckets (invisible to you in S3 - can see in RDS console only)
+  - replicated to other AZs in the region
+1. Snapshots
+- not automatic
+- like EBS snapshots
+- snapshots taken of the entire inst. (not just 1 DB - all DBs on the inst.)
+- builds on top of previous ones - incremental - only store changed data from previous
+  - first snap is a FULL snap of the inst. - takes a while
+  - will take longer depending on how much data inserted btwn last snap
+- there is an I/O pause during snap - noticable if not using multi-az deployment
+- snaps live on past deleting RDS inst. - you have to manually delete them
+- since snaps are manual, can choose snapshot frequency
+  - helps meet RPOs (recovery point objectives)
+- there are "system snapshots" that AWS takes themselves. gets deleted on inst. deletion
+! restores create a BRAND new RDS inst. - doesn't restore to the original inst.
+  - gets a new DNS endpoint
+  - have to update app configs to point to the new DB inst.
+2. Automated Backups
+- once per day
+- builds on top of previous ones - incremental - only store changed data from previous
+- like "automated snapshots"
+- define a backup window on the inst. - auto backups happen at this time
+- the snapshot is saved WITH transaction logs - every 5 minutes
+  - transaction log = log of anything that changed the DB data
+  - helps meet a 5m RPO - can restore to a specific point in time w/5m granularity
+- automatically deleted by AWS
+  - set retention period from 0-35 days (0 = disabled)
+  - any data older than 35 days is removed
+  - can choose to retain auto backups after deleting inst. - ! BUT still expire after retention period
+    - avoid this by creating a final snapshot
+
+Backup Storage
+- RDS can replicate backups to another region (both snapshots + transaction logs)
+- $ for the cross-region data copy, and storage $ in the destination region
+- NOT DEFAULT - have to configure this within automated backups
+
+Restores
+- spins up a NEW RDS inst.
+- new inst. gets !a new CNAME endpoint! - clients have to use new endpoint
+- restore is created from backup/snapshot, and transaction logs are 'replayed' to get DB to desired point in time (autom.d backups - 5 min granularity) - good for RPO
+- resores are NOT fast - affects RTO (recory time objective) - keep in mind
+- DB auth info stays same when restoring
+
+
+---
+RDS READ REPLICAS (RRs)
+
+read replicas use async. replication
+- after data written to primary, it's considered committed, THEN replicated to read rep.s
+- Sync = Multi-AZ | Async = Read Replicas
+
+can be created in OTHER regions than the primary
+- aka "Cross-region Replica"
+- AWS handles the networking btwn regions
+
+you get 5 read replicas per DB inst. (RDS inst.?)
+
+RRs can have RRs
+- but, lag increases if you do this (time btwn primary write & write to RR's RR)
+
+RRs give global perf. improvements - place RRs closer to read workloads in other countries
+
+improves RPO/RTO
+- RRs offer near-0 RPO 
+  - RR has full data copy of primary - just promote to recover data
+    - has data all the way up till primary failure
+- low RTO - just have to "promote" the RR to primary RDS instance (promotion is quick)
+  - once promoted, behaves like a normal RDS inst.
+- (snapshots & backups help with RPO, but RTO is a problem (long time to restore))
+! RR helps RPO/RTO ONLY in failure scenarios - NOT for data corruption
+  - if data was corrupted on primary, then it got replicated to RRs
+- global resilience if using cross-region RRs
+
+---
+RDS DATA SECURITY
+
+in transit: SSL/TLS  can be set to mandatory on per user basis
+
+at rest: EBS volume encryption via KMS
+- the host machine & EBS handle the encryption - the DB inst. thinks it's saving plaintext
+- AWS or Customer Managed CMK (customer master key) generates DEKs to encrypt the data
+  - the CMK within KMS generates DEKs, which are then loaded onto the RDS hosts
+- when encr.n is enabled, all storage, logs, snapshots, & replicas are encr.d
+- encr.n can NOT be removed/disabled after enabled
+other support:
+- RDS MSSQL and RDS Oracle support TDE (Transparent Data Encryption)
+  - handled within the DB engine - not by host machine
+    - RDS, EBS, & host never see the plaintext data
+  - useful if you don't trust AWS
+- RDS Oracle supports integration with CloudHSM
+  - CloudHSM is fully managed by you - keys are invisible to AWS - AWS not involved at all
+
+IAM Authentication for RDS
+- can configure RDS to allow IAM authentication to access the DB
+  - 'local DB user' (created on inst. creation) has to be config.d to use AWS Auth.n Token
+  - have to enable it on the RDS inst.
+- works for IAM Users or Roles
+- policy on the IAM user/role maps the IAM identity to the local RDS DB user
+  - policy allows the identities to run "generate-db-auth-token" operation
+    - creates a token (15m valid) that can be used instead of DB user pwd
+    - coordinates btwn RDS and IAM
+! only for AUTHENTICATION - NOT authorization
+- tldr: log into RDS DB with auth token instead of pwd
+
+---
+AMAZON AURORA
+
+officially part of RDS - but should treat is as a separate product
+
+cluster architecture
+- single primary, 0-15 replicas
+  - replicas - can use for BOTH failover/availability AND read scaling
+    - don't have to choose between avail.y (RDS Multi-AZ) and read scaling (RRs)
+    - any replica can be the failover operation target
+    ! diff from RDS
+  - primary allows writes & reads, replicas read-only
+- cluster storage volume - NOT per inst. local storage
+  - allows faster replica provisioning and better perf
+  - max 128GiB
+  - replicated across multiple AZs - 6 replicas across AZs
+  - all replicas have access to all storage nodes
+  - repelication happens at storage level - inst. replicas aren't involved - less CPU
+  - aurora detects disk failures/data corruption and repairs the corrupt storage node using the data from other nodes. 
+    - real time, so no need to restore using snapshots to fix this. aurora handles autom.y
+
+inst. failover is quick - no storage modifications b/c cluster volume
+
+storage is SSD only - default high quality - high IOPS, low latency
+
+don't have to provision storage when adding/removing replicas - fast
+
+connect to DNS endpoints for inst.s
+- cluster endpoint = always points at primary
+- reader endpoint = primary, or replicas if available (load balanced!)
+  - RDS alone doesn't load balance between RR (verify?)
+- can make endpoints direct to any specific replica - customize
+
+billing/cost:
+- storage - based on what's used.
+  - you don't specify a storage size, like in RDS. you just store data (up to 128TB)
+- high water mark - if consume 50GB, you're billed for 50GB
+  - ! even if you drop down to 40GB! still pay for the 50GB
+  - if need to save by reducing data, have to make a new cluster and migrate
+  ! this billing architecture being changed by AWS - might be changed already!
+- no free-tier option (b/c doesn't support micro instance size) 
+  - better value for bigger inst.s though
+- compute - hrly charge per second, 10m min.
+- storage - GB/month consumed (remember high watermark) + IO cost per request to storage
+- 100% of DB size free for backups
+
+backups mostly same for RDS
+- restores create brand new cluster
+- Backtrack - allows in-place rewind to prev. point in time
+  - helps with data corruption
+    - rollback in-place to a place before the corruption occurred
+  - has to be enabled on the cluster to use
+
+Fast clones = copy of a DB from old DB
+- doesn't make full copy of the original - only stores DIFFERENCES
+  - much smaller than orig. DB because only stores new data inserted to orig. or new DB
+  - "copy-on-write"
+  - makes cloning much faster
+
+---
+AURORA SERVERLESS
+
+what Fargate is to ECS
+
+removes DB instance management overhead - AWS takes care of it
+only thing you have to worry about is MIN and MAX values for ACUs. AWS handles the rest.
+much easier to use, easier to scale
+don't provision a cluster in the same way you do with the Aurora "Provisioned" version
+dynamic, vs. static provisioning of orig. Aurora
+
+still within RDS technically - aurora serverless is inside RDS console
+
+same resilience as Aurora - storage replication across 6 AZs 
+
+works on ACUs (Aurora Capacity Units)
+- ACU = represents certain amount of compute and corresponding amount of memory 
+  - AWS has a pool of ACUs. it allocates some to your cluster based on cluster load
+    - once ACU is given to your cluster, it connects to the storage cluster volume
+    - fast scale up/down 
+  - can have big or small ACUs
+- configure MIN/MAX ACUs for the cluster
+- cluster adjusts comput based on load
+- can go to 0 & pause it
+- scaling up/down without connection issues is b/c of proxy fleet architecture
+  - AWS transparently puts a fleet of EC2s in front of your cluster (proxies)
+  - the fleet inst.s are what connect to the cluster
+    ! client app DOES NOT have to connect directly to inst.s.
+    - this means ACUs can scale up/down without having to worry about client connec.s
+
+billing:
+- only billed for the ACUs you use at a given time, + cluster storage
+- consumption is billed per-second
+
+use cases:
+- infrequently used apps - blogs, etc.
+  - would only pay for usage on per second basis
+- new apps (unsure about load/size going to your app)
+- variable workloads - volume has peaks (store sales, etc.)
+- unpredictable workloads
+- dev/test DBs - can configure Aurora to pause itself during no load - only storage $
+- multi-tenant app - where scaling would be aligned with infra size and incoming revenue
+
+---
+AWS SECRETS MANAGER
+
+used to store & auto rotate secrets
+use via AWS console, cli, api, or SDKs for apps (integrates well w/your apps)
+secrets encr.d at rest via KMS
+  - role separation - need perm.s to KMS and to the secret
+integrates with IAM - permissions for access to secrets
+
+secrets mgr. rotates secrets for you automatically via Lambda function
+
+integration:
+- integrates with some aws svcs like RDS
+! when lambda fn. rotates a secret, secrets mgr. auto-syncs the secret in the svc (RDS)
+  - this means DB pwd gets updated to match new secret autom.y
+
+! shares most functionality with SSM Parameter Store
+- use Param Store for configs/other.
+- use Secrets Mgr. for SECRETS (db pwds, API keys)
+- diff: secrets mgr. rotates secrets and integrates with RDS/other svcs

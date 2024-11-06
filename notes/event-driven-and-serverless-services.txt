@@ -1,0 +1,86 @@
+---
+ARCHITECTURE NOTES
+
+Monolithic Arch. = all features are bundled into 1 code base
+- fail together, scale together, bill $ together
+
+Tiered Arch. = features/concerns split into different services
+- can use load balancers to abstract the tiers and allow horizontal scaling
+- still tightly coupled somewhat 
+  - they rely on each other 
+  - rely on responses from dependencies
+  - require at least one instance of dependency to exist and to work
+
+Microservice Architecture = app split up into smaller pieces
+- MSs can be viewed as: Producers, Consumers, or both
+  - produce data or messages
+- queues can communicate events btwn MSs
+
+Event Driven Architecture = just a collection of event producers & consumers
+- only consumes resources when required. no constant running or waiting
+  - (this is also a key requirement for serverless)
+- producers generate events to have an action taken on it
+- consumers consume events via events
+
+Queues:
+- accepts messages
+- messages can be polled off the queue
+- fifo (most often)
+- decouples application tiers/components when queue is placed in between.
+  - allows tiers to not care if dependent component is even available/ready
+
+"worker/fleet architecture"
+
+scale from 0-inf based on queue length
+
+Producers: could be... 
+- componenents customers interact with (clicking a 'submit' button)
+- parts of infra (ec2)
+- systems monitoring components (error during packing an order)
+- just anything that produces an event in reaction to something
+Cosumers: could be...
+- waiting for events to occur
+- dislpaying something for a customer
+- dispatch a human to resolve an order packing issue
+- retry an upload
+
+Both producers & consumers don't sit around waiting
+they don't consume resources unless something needs to be done (event occurrs)
+
+Event Router = central exchange point for events
+- has an event bus
+- adds producer's events to the event bus 
+- router can deliver those events to consumers
+- decides which consumer to deliver an event
+Event Bus = like a constant flow of information
+
+Event examples: clicks, errors, criteria met, uploads, actions, etc...
+
+
+---
+AWS LAMBDA
+
+FaaS = Function as a Service
+Function = just a piece of code lambda will run
+key part of serverless/event driven architectures
+
+need to define which runtime the function needs (ex. python3.8)
+need to define resources/memory the function can use
+- vCPU is allocated indirectly (it's based on memory allocation/usage)
+entire runtime env. starts up on function invocation
+functions are stateless - brand new env on each invocation
+
+$$ based on duration of function per invocation (& runtime env used)
+
+! Docker is an ANTI-PATTERN for lambda(?)
+but lambda supports using Docker images - distinct from the word "Docker" though
+- can build images specifically for use in lambda environment
+
+function timeout = 15m - can't run longer than 15m
+
+Common Uses
+- Serverless Applications (S3, API Gateway, Lambda - together can make a serverless app)
+- File Processing (s3, s3 events, lambda)
+- database triggers (dynamoDB, streams, lambda)
+- serverless cron (eventbridge/cwevents + lambda)
+- realtime stream data processing (kinesis + lambda)

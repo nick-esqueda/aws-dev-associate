@@ -152,6 +152,7 @@ can be used to connect AWS private networks to on-prem networks
   - 100% private by default
     - no way to communicate in/out of the private custom VPC without configuration
   - can have many cidr ranges
+  - can put multiple subnets in 1 AZ
 
 you can delete and recreate the default VPC
 without any VPC in a region you *can't launch any instances*
