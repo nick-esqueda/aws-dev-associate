@@ -1,0 +1,221 @@
+---
+VPC SIZING AND STRUCTURE THEORY
+
+! it's a good idea to have an IP plan before implementing network/VPC settings
+
+! make sure your IPs don't/won't overlap with other networks you need to use
+- overlaps will make things very difficult
+- VPCs, cloud, on-prem, partners, vendors
+
+tiers = separates app components and allow diff. security settings for each
+- ex. web tier, application tier, database tier
+- start with 4 usually - for web, app, db, and 1 spare
+
+AWS VPC sizing limits
+- min: /28 (16 IPs)
+- max: /16 (65,536 IPs)
+
+consider how many AWS regions the business might need to use, then add a few for buffer
+
+try to reserve 2+ networks/ranges per regions being used per account
+
+AWS VPC size guidelines:
+micro - /24 network, each subnet is /27 (27 IPs per subnet), 216 total IPs
+...
+extra large - /16 network, each subnet /20, 16 subnets, 65456 IPs
+
+must think - how many subnets do we need? how many total IPs do we need? IPs per subnet?
+
+you should default to 3 AZs for the VPC (+1 for a spare AZ)
+- most regions have at least 3 AZs
+
+VPC setup example:
+1 business
+  - 6 regions used by the business
+    - 4 AWS accounts spread across each region (ex. mgmt acct, dev, prod, spare)
+      - 4 VPCs in each account (/16)
+        - 4 AZs in each VPC
+          - 4 tiers each spread across each AZ (16 total subnets) 
+            - /20 subnets - 4094 IPs each
+
+work either bottom up or top down
+top down = start with business requirements and go down (process shown above)
+bottom up = start with minimum subnet size and work up
+
+---
+CUSTOM VPC
+
+regional service - operates from all AZs in the region
+isolated network
+no traffice in or out without explicit config.
+- helps reduce blast radius of issues
+
+custom VPC is opposite of the default VPC - you configure everything
+
+supports hybrid networks - can connect to other cloud or on-prem networks
+
+tenancy = controls if resources in the VPC are provisioned on dedicated or shared hardware
+- 'default' - can choose on per-resource basis if it goes on dedicated hardware or not
+- 'dedicated' - all resources in the VPC have to be on dedicated hardware - be careful
+
+private & public IP CIDR blocks:
+- private CIDR block - main method of comm for the VPC - used by default
+- public IPs - when resource needs to comm. with public internet (to/from)
+- 1 primary private IPv4 CIDR block - created & config.d when creating VPC. mandatory
+  - min = /28 (16 IP), max = /16 (65,536 IPs)
+  - can have optional secondary IPv4 blocks
+  - the primary private IPv4 CIDR block is same size/covers the VPC (confirm?)
+- can have optional IPv6 CIDR block (/56) (can only have 1)
+  - range gets allocated by AWS - you can't choose the range 
+    - (unless you use addresses you own)
+  - all IPv6 addresses are publicly routable by default - no such private vs public
+reminder: when choosing the IPv4 CIDR block when creating a VPC, you're choosing the private IPv4 addresses. remember that public IPs have to be allocated manually (afterwards)
+
+DNS in a VPC:
+- DNS can be used inside VPCs. DNS service is provided by R53
+- IP used for DNS lookups = VPC's Base IP + 2 
+  - ex. if base IP is 10.0.0.0/16, DNS IP is 10.0.0.2
+  - that IP hosts the "amazon DNS server"
+- enableDnsHostnames setting = determines if inst.s with a public IP get a public DNS name
+  - aka "Enable DNS hostnames" in the VPC console
+  - DISABLED by default when creating custom vpc
+- enableDnsSupport = toggles DNS resolution on/off in the VPC
+  - aka "Enable DNS Resolution" in VPC console
+  - enabled by default when making custom VPC
+  - if set to false, then inst.s can't use the DNS IP for DNS resolution
+
+
+---
+VPC SUBNETS
+
+used for structure, resilience, and availability of svcs in a VPC
+
+AZ resilient
+if the AZ fails, the subnet fails, and all svcs in that subnet
+good design = put infra components in different subnets
+
+subnets CANNOT span across more than 1 AZ - 1 subnet, 1 AZ
+you CAN have many subnets in 1 AZ though (0+ sunets in an AZ)
+
+the IPv4 CIDR of the subnet is a subset of the VPC CIDR range
+- can't configure it to be outside the VPC CIDR range
+! subnet CIDRs cannot overlap with other subnets!
+can optionally allocate an IPv6 CIDR for the subnet 
+- only if the VPC is IPv6 enabled
+
+subnets are PRIVATE by default - need to config to make public
+
+subnets can comm. privately with other subnets in the VPC by default
+
+5 reserved IP addresses (cannot use these - always reserved in all VPCs)
+- network address (10.16.16.0) - represents the network (concept even outside of AWS)
+- network + 1 (10.16.16.1) - VPC router sits here
+- network + 2 (10.16.16.2) - reserved for DNS resolution
+- network + 3 (10.16.16.3) - reserved for future AWS requirements
+- broadcast address (10.16.16.4) - last IP in subnet (concept even outside of AWS)
+  - broadcast isn't supported in a VPC, but you still can't use this address regardless
+
+DHCP Options Set
+- DHCP - how inst.s get an IP address inside the network automatically
+  - (dynamic host configuration protocol)
+- can attach the DHCP options set to a VPC (only 1 at a time)
+- settings get applied down through the subnets 
+- cannot change the configuration - have to make new DHCP options set and allocate
+
+other VPC IP allocation options
+- Auto Assign Public IPv4 - if res.s get a public ipv4 address (+ the default private one)
+  - defined on subnet level
+  - default is OFF - have to turn on manually
+- Auto Assign IPv6 - if resources get an IPv6 address
+  - defined on subnet level
+  - all ipv6s are publicly routable - no private vs. public
+  - default is OFF - have to turn on manually
+  - VPC has to have IPv6 enabled
+
+
+---
+VPC ROUTING, INTERNET GATEWAYS, BASTION HOSTS
+
+VPC Router:
+- every VPC has a VPC router by default
+- highly available - runs in all AZs in the VPC
+- VPC Router has a network interface in every subnet of the VPC
+  - this is the "network + 1" address
+  - like an octopus
+- purpose = simply route traffic between subnets in the VPC
+- controlled by Route Tables
+  - each subnet has a route table. VPC Router routes based on this route table
+- VPC has a "main route table"
+  - all subnets use the main route table by default, until you assign a custom one
+  - subnet can only have 1 route table - if you assign a custom one, main route table gets dropped
+    - 1 route table can be associated with many subnets though
+  - main route table only has the "local" route(s)
+
+Route Tables:
+- just a list of routes
+- route tables can be attached to 0 or more subnets 
+- subnet can only have 1 route table - if you assign a custom one, main route table gets dropped
+  - 1 route table can be associated with many subnets though
+- router examines IP packet's destination IP. picks a route that matches the destination
+  - multiple routes can match. whatever route is most specific will be chosen
+    - (/32 is most specific (1 IP), /0 least)
+  - "default route" = 0.0.0.0/0 - matches ALL IP addresses
+- routes in a route table have a destination and a target
+  - destination = can be a network or single IP - used to match incoming IP packet dest.s
+  - target = where to send the packet - will either be...
+    1. an AWS gateway
+    2. the "local" target/route - means destination is in the VPC itself
+- the "local" route - all route tables have AT LEAST this route
+  - matches the VPC CIDR range
+  - if VPC is ipv6 enabled, will have another route with IPv6 CIDR range
+  - local routes cannot be updated or deleted
+  - local routes ALWAYS take priority (even if there's a matching /32 route)
+
+Internet Gateway (IGW)
+- very important component in VPCs
+- regionally resilient
+  - the IGW covers ALL AZs in the region the VPC is using 
+  ! do NOT need an IGW per AZ
+- an VPC can only have 1 IGW (or 0). IGWs can be created but not assigned to a VPC
+- IGW runs between the VPC and the AWS public zone
+- allows services in the VPC with a Public IP address to comm. with the internet or AWS public zone (to/from)
+  - public zone - s3, sqs, sns, etc.
+- IGW handles perf. - "it just works"
+
+How to set up IGW
+1. Create the IGW
+2. Attach it to the VPC
+3. Create a custom Route Table
+4. Associate the Route Table with the desired subnet 
+5. Create default routes in the route table, with target as the IGW
+  - 0.0.0.0/0 (and ::/0 for ipv6, if applicable)
+  - since default route matches any IP, it's a "catch-all", so calls to internet will get caught by this default route, then sent to the IGW
+6. Make the subnet allocate public IPv4 (& IPv6) addresses to resources in the subnet
+  - "Auto Assign Public IPv4" option
+
+! public IPv4s are NOT technically attached to EC2s in the subnet
+- IGW uses static NAT (can consider the IGW as a NAT device)
+  - a record is created in the IGW - maps private IP to allocated public IP
+    - NAT table
+    - outbound packets - changes IP packet's source IP as the public IP in the map
+    - inbound packets - changes IP packet's target IP to the private IP in the subnet
+    - note: private IP is hidden this way
+- this means the OS doesn't know what the public IP for itself is
+- above doesn't apply for IPv6, since no public vs. private
+
+Bastion Hosts:
+- aka jumpboxes
+- inst. running in a public subnet that can connect to private inst.s in the VPC
+- used for mgmt/admin - usually SSH in and connect to internal VPC resources
+- usually config.d to allow only certain IP address connec.s
+- were historically how private EC2s were managed - alternate ways to do now though
+- pretty secure (but still bad practice)
+  - single point of access which can be controlled/monitored 
+  - hardened, stricter firewall rules, limited svcs running on the host
+  - useful because you only expose 1 bastion instead of multiple private inst.s
+    - (reduced attack surface)
+  - enforced MFA and enhanced logging
+
+note: bastion hosts/jumpboxes are BAD practice for accessing private resources in a VPC
+
+
