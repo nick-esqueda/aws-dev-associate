@@ -132,6 +132,8 @@ other VPC IP allocation options
   - default is OFF - have to turn on manually
   - VPC has to have IPv6 enabled
 
+a subnet can be min /28 and max /16 (same min/maxes as whole VPC networks) (? confirm)
+
 
 ---
 VPC ROUTING, INTERNET GATEWAYS, BASTION HOSTS
@@ -153,6 +155,7 @@ VPC Router:
 
 Route Tables:
 - just a list of routes
+- route tables are a thing so you can custom config. things like IGWs and NATGWs
 - route tables can be attached to 0 or more subnets 
 - subnet can only have 1 route table - if you assign a custom one, main route table gets dropped
   - 1 route table can be associated with many subnets though
@@ -170,6 +173,7 @@ Route Tables:
   - if VPC is ipv6 enabled, will have another route with IPv6 CIDR range
   - local routes cannot be updated or deleted
   - local routes ALWAYS take priority (even if there's a matching /32 route)
+! don't forget to associate the route table you create with the subnet
 
 Internet Gateway (IGW)
 - very important component in VPCs
@@ -218,4 +222,215 @@ Bastion Hosts:
 
 note: bastion hosts/jumpboxes are BAD practice for accessing private resources in a VPC
 
+---
+STATEFUL VS. STATELESS FIREWALLS
 
+inbound vs. outbound request/response always depends on whose perspective
+request:
+- client perspective: outbound request from this client to that server
+- server perspective: inbound request from that client to this server
+response:
+- client perspective: inbound response from that server to this client
+- server perspective: outbound response from this server to that client
+
+Stateless Firewalls
+- doesn't understand connections
+- have to define 2 rules for 1 connection
+  - here, "connection" means 1 HTTP request or response (example)
+  - 1 connection has a request and response
+  - "outbound rules can be both the request and response, and inbound rules can ALSO be the request and response"
+- rules:
+  - 2 rules for 1 inbound connection (HTTP request TO your server)
+    - 1 inbound rule (incoming req. packets), 1 outbound rule (outbound resp. packets)
+  - 2 rules for 1 outbound connection (HTTP request FROM your server)
+    - 1 outbound rule (outbound req. packets), 1 inbound rule (inbound resp. packets)
+! rules you create for the outbound response from the server usually need to allow whole range of ephemeral ports (client's ephemeral ports)
+  - 1024-65535
+  - (stateful firewalls address this concern)
+  - ephemeral ports = random high numbered ports on the client used by applications
+    - port is chosen by the OS of the client
+
+Stateful Firewalls
+- links request packets to response packets
+- can see the src/dst ports on packets and knows what the response will be
+- don't have to have 2 rules for 1 connection - only need 1
+  - reduces admin overhead and chance of mistakes
+- only have to think about the directionality of the request, and it handles the rest
+
+---
+NETWORK ACCESS CONTROL LIST (NACLs)
+
+like a traditional firewall inside a VPC
+
+associated with subnets only - every subnet has a NACL
+NACL lies on the border of subnets:
+- all data coming in and going out of the subnet are affected
+- NACL's don't affect traffic within the subnet
+can attach a NACL to many subnets
+
+NACL = Stateless firewall
+
+NACL rules can be explicit allow or explicit deny
+
+NACL rules are ordered. processed in lowest to highest order
+- 1, 100, 200, etc.
+- it stops at the first rule that matches
+  - traffic will be denied if deny rule comes first, even if an allow rule comes later
+- * = catch-all rule number - implicit deny
+
+rule-pair = app port + ephemeral ports
+
+remember - need to add 2 rules for each subnet boundary that gets crossed in a request
+- ex. web tier subnet calling app tier subnet - crosses 2 boundaries
+
+default - VPC has a default NACL on VPC creation - it allows all traffic
+custom NACL - NACL is created for a VPC, but is not assigned to any subnet by default
+- default has 1 rule - default deny for all traffic
+  - attaching this means traffic can't move in/out subnet
+  - have to modify the rules
+
+NACLs aren't aware of AWS logical resources - only works on IPs/CIDRs, ports, protocols
+
+generally use NACLs to DENY traffic, and Security Groups to ALLOW traffic
+- can deny specific IPs/ranges on a NACL that the SG is currently allowing
+
+
+---
+SECURITY GROUPS (SG)
+
+stateful firewall - configures response traffic rules automatically
+- ex. if allow inbound TCP 443 requests, then the response is allowed autom.y
+
+! unable to explicitly deny
+! can't block specific bad actors/IPs
+  - this is why NACLs are used along with SGs
+- however, implicit deny by default - can only add rules to allow stuff
+
+allows referencing AWS logical resources
+- can do this b/c SGs are higher on the OSI model than NACLs
+- can reference other SGs and even itself
+
+! technically, SGs are attached to ENIs, NOT instances (even if UI makes it seem so)
+- (Elastic Network Interface)
+- it attaches to the instance's primary network interface
+  - it "surrounds the instance's network interface" - like a border/wall around it
+
+referencing other SGs:
+- you can set an inbound rule to allow inbound connections from ANOTHER SG
+- this means any resource with that SG is covered by that rule
+! scales really well - if you add more inst.s and use that SG, then you don't have to configure any more rules - allowed automatically
+  - less admin overhead
+- fixes problem where you might change the IP of the client inst. and would need to update some SG to allow the new IP
+
+self-referential SGs:
+- can set an SG rule to allow traffic from itself
+- this means other inst.s that have this same SG attached can communicate
+- helps when adding lots of inst.s in HA scenarios
+- IP changes are automatically handled (think about ASG terminating/adding inst.s)
+
+---
+NETWORK ADDRESS TRANSLATION (NAT) & NAT GATEWAY
+
+gives private resources *OUTGOING-ONLY access to internet
+- useful when need a private subnet (ex. app tier) but want to allow outbound traffic
+
+AZ-resilient - resilient only in the AZ that they're in
+! NOT regionally resilient. you need 1 NATGW per AZ for regional resilience
+- if AZ fails, NATGW fails 
+  - if you only have 1 NATGW, if AZ fails, then inst.s in other AZs pointing to that NATGW will not longer have outbound internet access
+- to make regionally resilient:
+  - deploy 1 NATGW in each AZ of the VPC
+  - make the route tables of subnets in that AZ point to that AZ-specific NATGW with default route
+
+managed svc - handled by AWS
+if need more bandwidth, can deploy more NATGW and split heavy traffic through those
+
+"many-to-one translation"
+
+NAT Gateway = AWS's impl. of this within a VPC
+
+NAT = a set of processes that can remap the source or destination IPs of IP packets
+
+IGW uses Static NAT
+- usually 1 private IP to 1 public IP - NAT table
+
+NAT is essentially same as IP masquerading = hiding CIDR blocks behind one IP
+- 1 public IP to many private IPs
+- most ppl refer to NAT as IP masquerading, but technically IP masq.g is a subset of NAT
+- very useful because IPv4 addresses are running out
+- can't have inbound requests/conn.s to private inst.s though - doesn't work like that
+  - b/c 1 public IP could be mapped to many private IPs - what inst. does the client mean?
+    - (? but isn't this possible in home networks? REVIEW NETWORKING FUNDAMENTALS COURSE)
+  ! outgoing only
+  - of course, response IP traffic/packets can still go through though
+
+NAT Gateway has a "translation table" that records request info
+- src/dest. IP addresses, port #s, + more
+- this is what allows the response to get to the right private IP in the subnet
+
+without NAT:
+- could host software update server inside your VPC
+- would have to make your private subnets public
+
+NAT Gateway Setup
+- put NAT Gateway in public subnet
+  - NAT Gw will get it's own public IPv4 address, since it's in the public subnet
+    - (think of the NATGW as just another inst. that gets a public IP)
+    - NEEDS to be in a public SN so that it can get the public IP for itself
+    - allows data to go out and get data in return from internet
+    ! remember, technically the IGW holds the public IP address - not assigned to NATGW
+      - static NAT table on IGW
+- route table of public subnet should have default route pointing to the IGW
+  - this allows the NATGW traffic to go thru IGW to the internet
+- private subnet's route table needs a default route that points to the NATGW
+  - so inst.s in the private subnet will hit the NATGW when calling an IP outside the SN
+- when packets go from private SN inst. to NATGW, NATGW records in translation table, then changes src IP of packet to it's own (NATGW's) source address
+  ! technically, since the NATGW isn't aware of it's public IP, it uses a different address
+    - the IGW has the public IP for that IGW
+    - ex. "src_ip: nat_gw_int"
+- IGW will know that the packet is from the NATGW
+- IGW will modify the packet src IP to be the NATGW's public IP
+  - (since only the IGW knew what the NATGW's public IP was)
+- then sends packets on it's way
+
+if need inst.s in a public subnet to access the internet, ONLY IGW is needed
+if need inst.s in a private subnet to access interent, need NATGW in pub SN and IGW
+
+NAT Gateways use Elastic IPs (a static IP in an AWS acc.t)
+
+costs:
+- $ for time duration the NATGW is running - per hour (charged per hour, even if 1 min)
+- $ for data going through the NATGW
+- ! not free-tier eligible. you will be charged, no matter how small the usage
+
+2 Types of NAT service:
+both are kinda the same - same functionality & setup
+NATGW is usually preferred - AWS suggests to use it instead of NAT inst.
+- NAT Instance = and EC2 instance that performs NAT
+  - limited to bandwidth/performance of the EC2 instance type
+  - general purpose, so not customized to be performant for NAT
+  - availability concern - the EC2 can fail
+  - can be cheaper than NATGW though, and get to choose inst. size
+  - flexible - could use it as a jumpbox to private inst.s (can't do with NATGW)
+  - port forwarding
+  ! supports SGs, unlike NATGW, since it's just an EC2, can attach SG to it
+- NAT Gateway = AWS managed NAT gateway service
+  ! doesn't support SGs - can only use NACLs to protect NATGWs
+  - can't use as jumpbox
+  - highly available in each AZ of the VPC
+
+! EC2 filters all traffic it receives by deafult 
+- it drops all packets that don't have it's IP as the src or dest
+- but if you're trying to use a NAT inst., then src and dest won't ever be the EC2
+  - src = some other private inst. in the subnet
+  - dest = some IP over the internet
+! to allow EC2 to function as a NAT Instance...
+  - have to disable the "Source/Destination Checks" option on the EC2
+
+! NAT isn't required for IPv6!
+- because all ipv6 in AWS are publicly routable
+- they don't work with IPv6 at all actually
+- IGW works directly with IPv6 IPs directly
+- only need ::/0 default route pointed to IGW to get bi-directional comm. w/internet 
+- if need IPv6 to ONLY have outbound only access -> ::/0 Route + Egress-Only IGW
+  - Egress-Only IGW is specifically for IPv6 for this use case
