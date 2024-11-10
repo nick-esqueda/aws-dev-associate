@@ -1,6 +1,8 @@
 ---
 S3 SECURITY
 
+! MISC NOTE: limited to 100 buckets in an AWS acct by default
+
 s3 is private by default
 
 bucket policy = type of resource policy 
@@ -51,7 +53,7 @@ tradeoffs between identity policies vs resource policies - choice depends on use
 ---
 S3 STATIC HOSTING
 
-allows access via HTTP (using web browsers)
+allows access via HTTP (think web browsers)
 
 must set an index and error document
 - must be html docs bc that's what static hosting delivers
@@ -61,7 +63,7 @@ if you want a custom domain, must make bucket name same as domain name
 
 use cases:
 offloading:
-- serve static images S3 instead of serving them from a compute service (ec2)
+- serve static images from S3 instead of serving them from a compute service (ec2)
   - this will save costs since compute is expensive - s3 isn't
   - ex: dynamic html doc retrieved from ec2 points to images in s3 bucket
 out-of-band pages:
@@ -447,7 +449,7 @@ S3 Standard-IA (Infrequent Access)
   - min capacity charge of 128KB per obj
     - not useful for lots of tiny objects
 
-S3 One Zone-IA (Infrequnt Access)
+S3 One Zone-IA (Infrequent Access)
 ! For long-lived, non-critical, replaceable data that isn't accessed frequently
 - same as S3 Standard IA except below...
 - data is only stored in ONE AZ
@@ -500,10 +502,10 @@ S3 INTELLIGENT-TIERING
 - tiers:
   - freq access (similar to standard)
     - move to below if 30 days no access
-  - infreq accss (similar to standard-IA)
+  - infreq access (similar to standard-IA)
     - move to below if 90 days no access
     - have to configure a prefix or tag in the bucket to be able to move lower
-  - archive instance access (similar to glacier instant)
+  - archive instant access (similar to glacier instant)
     - 90 days no access
   - archive access (similar to glacier flex retrieve)
     - 90 - 270 days no access
@@ -515,4 +517,328 @@ S3 INTELLIGENT-TIERING
   - each tier is same as their similar/equivalent storage class
   - + monitoring & automation cost per 1k objs
   - no retrieval fees - the above monitoring/autom.n fee covers it
+
+
+---
+S3 LIFECYCLE CONFIGURATION
+
+Lifcycle Configuration = a set of rules which consist of actions that apply to a bucket or groups of objects
+- group of objects - can group by prefix or tags
+- rule = "do x if y is true"
+
+automates moving objs to other storage classes or deleting/cleaning up objs
+
+Actions
+can apply to versioned buckets/objs
+transition actions = transition objects into a different storage class
+expiration actions = delete (expire) objs/obj versions
+
+think of a waterfall
+! cannot transition upwards - only down (ex. can't go from S3 glacier to S3 standard)
+flows:
+
+! beware of moving smaller objs to lower tiers - can end up paying more due to min size $
+
+! if put obj in S3 standard, have to wait 30 days before moving the obj to standard-IA or one zone -IA (when using lifecycle config)
+  - can still do directly from CLI/UI/etc. if needed
+
+! can't transition to standard-IA or one zone-IA then to glacier classes within 30 days
+- Standard -(30d)> Standard-IA -(30d)> Glacier
+- this applies to a SINGLE RULE - can still have 2 separate rules that do this under <30d
+
+---
+S3 REPLICATION
+
+allows to configure replication btwn src. and dest. S3 bucket
+
+CRR = Cross-Region Replication - replicate to a dest. bucket in a diff region
+SRR = Same-Region Replication - replicate to a dest. bucket in the same region
+both above can have dest. bucket in a diff AWS acct
+
+how replication is done:
+- have to set repl.n config on source bucket
+  - enable versioning on both src and dest buckets
+- set dest. bucket in config
+- create a role which src bucket can assume that allows to copy from src and write to dest
+  ! if dest. bucket in diff account...
+    - bucket policy of dest. has to allow the role in the src. acct. to write to it
+- done using SSL/TLS - encrypted in transit
+
+Options:
+- what to copy - all objs or a subset (based on prefix or tags)
+- storage class - by default, dest. uses same storage class as src obj
+  - can configure this to use diff class
+  - ex. personal project, just need repl.n for safety, primary bucket used for reads, so dest. bucket can use standard-IA or lower
+  - saves $ for the dest. bucket - even though 2x data, you can save some
+- ownership - default owner is the src acct
+  - fine if same-acct replication, but maybe concern for cross-acct repl.n
+    - means dest. bucket/acct cannot read the objs
+  - can configure owner to be the dest. acct.
+- Replication Time Control (RTC) - enables a 15m SLA for replication
+  - used if you need to ensure buckets are in sync within 15m for regulations/etc.
+  - "Replication Time Control replicates 99.99% of new objects within 15 minutes and includes replication metrics. Additional fees will apply"
+
+! Considerations:
+- repl.n is NOT RETROACTIVE by default
+  - have to use "batch replication" to replicate existing objs
+- versioning needs to be turned on in order to use repl.n (for BOTH buckets)
+  - can turn on when turning on repl.n
+- repl.n is one-way by default (can do bi-directional repl.n if explicitly config.d only)
+  - one-way - if you put an obj in the dest. bucket, it won't get repl.d to the src.
+- can handle unenc.d, SSE-S3, SSE-KMS, SSE-C
+  - need extra config to handle SSE-KMS repl.n
+  - note: SSE-C wasn't historically compatible with repl.n - but now it is - 2023
+- src bucket owner neees perm.s on the objs that get repl.d in dest. bucket
+  - src bucket acct might not own some objs in dest. acct by default - need to allow src to be the owner
+- doesn't repl. system event (lifecycle mgmt)
+- can't replicate objs that are in glacier or glacier deep archive
+- doesn't replicate deletes by default
+  - if delete an obj in src., it will still exist in dest., because deletes aren't repl.d
+  - can enable this though - "DeleteMarkerReplication"
+
+Purposes:
+SRR:
+- syncing PROD and TEST aws accts in same region (cross acct)
+- for resiliency, even though company has strict data sovereignty requirements
+CRR:
+- global resilience
+- latency reduction - buckets closer to users will be faster
+- for DR of an S3 static site
+
+---
+S3 PRESIGNED URLS
+
+issue scenario:
+- have a private s3 bucket
+  - AWS authenticated users can access it (with correct policies/auth.z)
+- need to give unauthenticated applications/identities access to objs in the bucket
+- 3 un-ideal solutions for this:
+  1. give the unauth.d identity an AWS identity
+  2. provide AWS credentials to it/them
+  3. make the bucket public
+
+S3 PreSigned URLs address this above scenario
+
+How it works:
+1. an AWS IAM user (with correct perm.s) requests S3 to generate a PreSigned URL
+  - the URL has info encoded into it
+    - the specific bucket
+    - the specific obj
+    - the necessary auth.n info of the IAM user that created it
+    - the perm.s allowed
+    - the time limit (ex. 2/3 hrs)
+2. the presigned URL is created and given to IAM user
+3. IAM user passes the URL to the unauth.d user
+4. user can use the URL to access the obj/bucket
+- the URL is TIMED - after time expires, URL cannot be used
+- when someone uses the URL, they are accessing the obj AS the IAM user that gen.d it
+- URL can be used for GET and PUTs based on perm.s
+
+presigned URLs are good for when you offload media into S3 from your app
+also good for serverless architectures when s3 objs should stay private
+- don't need to run thick app servers to broker access
+
+scenario:
+1. user visits web app to watch a video
+2. app server gets presigned URL from S3 using the IAM User credentials it has
+  - note: IAM User can be used for app servers b/c it's 1 identity needing access
+3. presigned URL is sent back to the user's web app client
+4. user/web app can use the presigned URL to view the video for limited time
+
+misc:
+! don't generate presigned URLs using an IAM ROLE.
+  - the temporary cred.s created when assuming role will probably expire before URL expiry
+    - URL expiry times are usually long, while role cred.s from STS are short
+  - should alwaays use long-term idenities/cred.s (IAM User)
+- technically, you could create a URL for an obj that your IAM User doesn't have access
+  - only need to specify obj and time limit
+  - however, this means obj cannot be accessed from the URL, since authN/authZ is baked in
+  - not many use cases for this
+  - note: if you later grant the IAM User that gen.d the URL access to the obj, the URL will work
+- the URL perm.s match the perm.s that the IAM User has RIGHT NOW (at obj access time)
+  - if you could access the obj through URL a day ago, but not now, maybe perm.s changed
+- you can generate a URL for a non-existent obj
+  - xml output when visiting URL: <Message>The specified key does not exist.</Message>
+
+example of URL generation from CLI
+[cloudshell-user@ip-10-136-60-225 ~]$ aws s3 presign s3://animals4lifemediabucket-ne/all5.jpg --expires-in 180
+https://animals4lifemediabucket-ne.s3.us-east-1.amazonaws.com/all5.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=ASIA2LIP2HF7SGVJHSNW%2F20241109%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20241109T204616Z&X-Amz-Expires=180&X-Amz-SignedHeaders=host&X-Amz-Security-Token=IQoJb3JpZ2luX2VjEPX%2F%2F%2F%2F%2F%2F%2F%2F%2F%2FwEaCXVzLWVhc3QtMSJIMEYCIQCZV63w2fhxmRC4sf93t9vHgxnndiDE10H%2Fb1YgE8I3QQIhAO3L10rNXuWpQ1yjejLR7QpvRoGYKXHtc9%2FwIMmnWMaJKo0DCH4QABoMNzExMzg3MTM0MzM1IgyBrNhSsADdmGKJMn4q6gIAMUbQCH1PqKgmiJPhlQqlg5r8bMY83Y5OjpNQYKtw80ODAEWgJ1s7NmRCpWuphdLDo4CgrqhmkZwYmKXaOuKF86WM7Ypbo2MuhrIlcZPL%2FsPOuJKUtyAWK0%2BiNbByYeWmG54A18MxWKWj4F%2BE7N2ktHfba9Hhv46vjI9omPDmeB1D3%2B5U6POiT1uYv5s23dAf4HbvMson9kt0JDlDnoOhedHc0E20TjuK9z6%2BYRP0LDIxqszwXjkbzpac%2BIH%2BgP%2BqbdTRqn3JnUdBPBH%2BehFeyGvafscjh0v25uu6uzw4Zn%2BuYKwXE9rXVx5kynhk58tfO0cbSB54iPm9U9IS%2BUdkquzIm2w%2F%2BY9xvu3T%2FU%2B90vyw0dPWEmofXUnv2ZMFpqzArw%2BTa24GxXIdtBVGQW8%2BF8o%2BDAyJSydWFZltLQSbrMsjGFkqzWMKqZJUVRR3SUgnpJS9aedgQ0ccjR0KOIz84firUi1TTLyzUTC7hb65BjqyAjULqw0igYSMM5mZCMcO1wydQUC%2F4lAhLZkMhEeqjnxOwM4PcLaa%2FXWEeBjzwo8rU2pOQdKsB4IODsS9Laou%2B%2B8%2FE0N4B7TkVpBwe9T8NDxmUn%2BKHuPb%2B6BklTsu2lpCcfA3HA0iRPj75AKHAX%2BatqWZz7UIH2fMHq18aMDfGegGascwENxOq3QROfCevq2voLQGpN4P0oFgV4Xw%2Bf5Qu8KR%2FU39%2FuGctb3xS578tT1tpEqz%2FkjvEEfYtybZ6DSJJjKKunzggtdKmivUvlXvi0RwJ85TuCtB0Ovc2N5SZCSQrch9sHT%2Bqp03NvPRFsSl3LyeGWUZh3BhtdTzjRZVUsiQ03TooXlYd%2BJg4PoKt%2Fku1YSM6rWmWF%2F%2FbyVCRX2RDraYnz0Q1wu7PeEEC7TjnSfXrw%3D%3D&X-Amz-Signature=12c3df5d48a1e1764a98a00818c20ddc50b8c3676d4f4e78234076e7ac5355eb
+
+---
+S3 SELECT AND GLACIER SELECT
+
+can retrieve parts of objs instead of the whole obj
+
+compatible with CSV, JSON, Parquet, BZIP2 compresssion for CSV and JSON
+
+S3 can store huge objects (up to 5TB) - infinite number of objs
+- GETting whole obj will take long time and you'll get billed a lot
+- client can filter out unneeded data (i.e. do the query on client side), but whole obj is still sent from S3, you get billed for all the data transfer
+
+can create SQL like statements, give query to the service (s3 select or glacier select) and service will return only that part of the obj
+- "pre-filtered" by s3 - only that part of the obj is sent back in response
+- faster and cheaper so only receive parts
+
+S3/glacier filtering happens on S3 side
+applies query to raw data
+
+remember: client apps have to be aware and integrate with this feature
+
+---
+CROSS-ORIGIN RESOURCE SHARING (CORS)
+
+the site the browser requests on first connection is the "origin" (ex. catagram.io)
+browser sets that domain as the origin
+same-origin requests are always allowed
+Cross-Origin Request = requests to domains (aka origins) that are diff from defined origin
+cross-origin req.s are restricted by default
+- but, can be controlled/influenced by CORS configurations
+
+CORS configs have to be defined on the other origins/domains
+the config defines which origins they allow req.s from
+  - can be specific domain or "*"
+  - if don't specify, req will fail
+(original origin always allows req.s to it)
+
+CORS policy in S3
+- defined as JSON array
+- can specify multiple statements
+- statements are defined in order. first matching rule is used
+- note: these CORS configs are NOT permissions
+
+Preflight requests
+- just a check in advance before the main req. to the other origin
+- HTTP req. to other origin to check if the real req. is safe to send
+- triggered for anything more complicated than a "simple request" (ex. GET req.s)
+
+CORS headers:
+part of response to the preflight req. from other origin
+- Access-Control-Allow-Origin
+  - "*" or a specific origin
+- Access-Control-Max-Age
+  - how long the results of a preflight can be cached
+  - preflight results are cached autom.y, so don't have to do on every single req.
+  - this header controls how long the results are cached
+- Access-Control-Allow-Methods
+  - allowed methods for other origin, i.e. GET/POST/PUT/etc. or "*"
+- Access-Control-Allow-Headers
+  - indicates which HTTP headers can be used in the ACTUAL req. (not the preflight)
+
+remember - original URL in the browser is defined as the origin - other domains need CORS.
+
+---
+S3 EVENTS
+
+notifications can be generated when events occur in a bucket
+these can be delivered to SNS topics, SQS queues, or Lambda functions
+
+event types:
+- object created (PUT, POST, COPY, CompleteMultiPartUpload)
+- object deleted (*, Delete, DeleteMarkerCreated)
+  - useful for security
+- object restore from S3 glacier (restore initiated, restore complete)
+  - useful to send emails when archive restore is complete
+- replication (OperationMissedThreshold (15m SLA), OperationReplicatedAfterThreshold, OperationNotTracked, OperationFailedReplication)
+
+define an event notification config on s3 bucket
+
+each destination service (lambda/sns/sqs) need to allow the S3 principal to interact
+- resource policy
+
+the S3 events are just JSON
+
+can use EventBridge too
+- get access to more types of events
+- can interact with wider range of AWS svcs
+- should usually default to using EventBridge - but still know S3 events exist
+
+---
+S3 ACCESS LOGS
+
+just logs of what was accessed in the bucket, when, etc.
+logs get placed in a diff bucket
+- src bucket = bucket we want to monitor
+- target bucket = bucket that stores the access logs
+have to enable access logging on the src bucket via console or CLI (PUT Bucket Logging)
+S3 Log Delivery Group:
+- reads configs of src bucket to see if logging is turned on 
+- does the actual logging to the target bucket
+need target bucket ACL to allow S3 Log Delivery Group perm.s
+logging is done "best effort" - logs delivered within a few hours, NOT immediately
+
+log files:
+- each log is newline delimited, each attribute is space delimited (like normal logs)
+
+can have many src buckets log to the same target bucket using prefixes
+- configure this on the src buckets
+
+helps with:
+- security/access audits
+- understand customer access patterns - insights
+- understanding charges on S3 bill
+
+you are responsible for the lifecycle of the logs
+- i.e. deleting or moving to other storage classes
+
+---
+S3 REQUESTER PAYS
+
+setting that makes the client's/requester of S3 objs pay for the transfer OUT charges
+- costs are paid by identities requesting the objs
+- remember: transfer IN to S3 is free, even for large data sets
+- GB/month storage cost is always the bucket owner's responsibilty not matter what
+
+useful for very popular data sets in S3
+
+"requester pays" is a configuration on the bucket - NOT per obj
+
+unauthenticated access is not supported with requester pays feature
+- doesn't work with static website hosting or BitTorrent
+- client has to be authenticated so AWS knows what identity/acct to bill
+- requesters must add the "x-amz-request-payer" header to confirm $ responsibility
+
+---
+S3 OBJECT LOCK
+
+group of related features
+
+object lock can be enabled on new buckets only
+- raise support ticket to enabled object lock on existing buckets
+
+requires versioning to be enabled 
+- cannot pause versioning - has to always be enabled
+- technically, individual versions are locked, not just the "obj"
+
+WORM = Write-Once-Read-Many
+object lock follows the WORM model/arch.
+- objs cannot be deleted, or overwritten
+
+object lock feature manages locks in below 2 ways
+1. S3 Object Lock Retention period
+  - specify DAYS and YEARS that object can't be touched
+  - 2 modes of retention period lock
+    1. COMPLIANCE
+      - !!! very strict!
+      ! even root user cannot adjust the lock/settings after set
+      - can't adjust/delete/overwrite objs
+      - can NOT adjust the retention period after set
+      ! obj has to stay there as-is until retention period is up
+    2. GOVERNANCE
+      - can't adjust/delete/overwrite objs...
+      - BUT, special perm.s can be granted to allow adjusting lock settings
+        - identity must be granted "s3:BypassGovernanceRetention" perm.s
+        - "x-amz-bypass-governance-retention:true" header must be passed in req.s
+          - (this is default when using the console UI)
+        - allows modifying obj within the retention period
+2. S3 Object Lock Legal hold
+  - you don't set any retention period at all - no retention concept
+  - just set an obj version as ON or OFF
+  - can't delete or change an obj until hold is removed
+  - s3:PutObjectLegalHold perm.s required to toggle the legal hold setting
+  - use case: prevent accidental deletion of critical obj versions
+
+- an obj can have both, either, or none of the above lock versions
+- these are defined on specific obj versions
+- can specify defaults for above on bucket level (like obj encryption settings)
+- if use both on an obj, then the effects usually overlap (i.e. you still can't touch)
 
