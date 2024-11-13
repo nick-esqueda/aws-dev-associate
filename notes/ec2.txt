@@ -1,0 +1,218 @@
+---
+EC2 ARCHITECURE
+
+ec2 inst.s are virtual machines (VMs) - OS + resources
+- share CPU/memory resources with other VMs on the host
+
+ec2 instances are run on physical ec2 "host machines"
+shared hosts = multiple EC2 instances on an AWS host, each for random ppl (default)
+- i.e. multi-tenant
+dedicated hosts = your own entire host allocated to you
+- more expensive to provision
+
+! AZ resilient - if the AZ fails, the host fails, so your inst. fails
+- hosts are just in 1 AZ, obviously. just a phys. machine
+- everything about EC2 circles the fact that it's in 1 AZ
+
+when provisioning an inst., an ENI is mapped in your subnet to the physical network hardware on the EC2 host. remember - host is in the AZ, outside of your subnet. the ENI in your subnet just maps to this host outside the SN.
+- you could have an ENI for the same exact inst. in multiple subnets in the AZ
+  - ex. inst-1 has ENI-1 in sn-A, and ENI-2 in sn-B, within AZ-A
+
+EC2 hosts have instances stores
+- EC2 inst. could use the instance store, but if the inst. gets moved to another host, that data is gone
+
+EC2 host can connect to remote persistent storage - EBS
+- EBS is also AZ-based
+  ! cannot connect to EBS in a different AZ
+- you can allocate EBS volumes to inst.s in the same AZ
+- EBS is a network storage product - need good network bandwidth to store a lot fast
+
+EC2 inst.s move to another host when:
+- the host goes down (issue or AWS maintenance)
+- you stop the instance
+- (if restarting the inst., it stays on same host)
+the new host with still be in the same AZ
+
+USE CASES
+- traditional OS + Application compute requirements (like legacy apps)
+  - maybe vendor requires things to be a certain way - use EC2 to keep those things
+- long-running compute - can keep services running for >1/2 yrs. other products can't
+- server applications
+- burst or steady-state load
+- monolithic application stacks
+- migrated application workloads (legacy apps that need to get migrated to AWS)
+- DR environment
+
+SSH VS EC2 INSTANCE CONNECT
+instance connect uses IAM (who you're logged in as in the console)
+to use instance connect, need to allow AWS instance connect service IP address range
+- through SG
+- ex. if only allow your home IP to SSH in, then instance connect won't work
+SSH doesn't scale well - 100 employees need the private key
+- get more control over perm.s when doing EC2 instance connect - control at IAM level
+
+---
+EC2 INSTANCE TYPES
+
+diff inst. types come with diff hardware
+- raw cpu, mem, local storage capacity/type of local storage
+- ratio of resources (hi cpu but low mem, vice versa)
+- storage network bandwidth, data network bandwidth
+  - this could impact storage performance, if not enough storage network bandwidth
+- system arch. (x86, arm) & vendor
+- additional features/capabilities
+
+EC2 TYPE CATEGORIES
+general purpose - diverse workloads, balanced resources ratio (cpu/compute)
+compute optimized - more CPU than mem
+  - media pricessing, high performance computing, scientific modelling, gaming, ML
+memory optimized - more mem than CPU
+  - processing large in-mem datasets, some database workloads
+accelerated computing - dedicated hardware GPU, FPGAs (Field Programmable Gate Arrays)
+  - for more niche needs, when you know what you need
+storage optimized - sequential and random IO - heavy on network storage bandwidth
+  - scale-out transactional DBs, data warehousing, Elasticsearch, analytics
+  - heavy IO operations
+
+INSTANCE TYPE NAMES
+example: R5dn.8xlarge
+- R - instance family
+- 5 - instance generation - each new generation comes with better hardware, etc.
+- dn - additional capabilities - ex. extra memory, amd processor, etc.
+- 8xlarge - instance size - nano, micro, ..., large, ... 8xlarge, ... - bigger = more $
+
+(! review the EC2 Instance Types chart in the repo for this lesson)
+
+---
+STORAGE REFRESHER
+
+storage terms:
+- direct storage - aka local storage or attached storage
+  - known as the "instance store"
+  - the storage on the physical machine
+  - fast, because directly connected to the host
+- network attached storage - storage volumes delivered over the network
+  - EBS delivers network storage - persists past instance lifecycle
+- ephemeral storage - just temp storage
+  - ex. instance store
+- persistent storage - permanent
+  - ex. EBS
+
+categories of AWS storage:
+- block storage
+  - just a collection of uniquely addressable blocks - unstructured
+  - can be used as root file system - OS takes blocks and layers a filesystem on top
+  - mountable
+  - bootable
+  - used to boot EC2 inst.s (EBS volumes are used as boot volumes for EBS)
+    - boot volumes store the OS
+- file storage
+  - provided by a file server - provides a file system
+  - structured (because it's a folder structure)
+  - mountable in some cases
+  - NOT bootable
+- object storage
+  - just store objects. no structure, just flat collection of objects & metadata
+  - provide a key, and get the object
+  - super scalable
+  - NOT mountable
+  - NOT bootable
+
+storage performance:
+- IO (block) size
+  - size of racecar wheels
+  - size of the blocks of data you're writing to disk
+  - 16KB, 64KB, 1MB, etc.
+- IOPS - Input/Output Operations Per Second
+  - like the speed of a racecar - revolutions per second
+    - takes the IO size into account (given the car wheel size, how many revolutions/s)
+  - the number of reads or writes the storage system can support per second
+  - network latency impacts IOPS a lot, if it's network storage
+    - not a concern for local/direct storage
+  - if IO size increases, then IOPS might end up decreasing - they are related
+- Throughput - amount of data (rate) that can be transferred in a given second (megabytes/s)
+  - end speed of the racecar
+  - Throughput = IO (block) size * IOPS
+  - sometimes throughput has a max cap
+
+---
+ELASTIC BLOCK STORE (EBS)
+
+volumes can be optionally encrypted using KMS
+instances take block devices and create file systems on them
+! storage is provisioned in ONE AZ
+  - EBS in AZ-A is diff than EBS in AZ-B - !NOT REGIONAL!
+  - can take snapshot of the EBS volume, saved in S3 (regionally resilient), then restore that SS in a diff AZ if want to migrate to another AZ
+    - can copy that SS to another region too, and attach to inst.s
+diff physcial storage types - SSD, high performant SSD, etc.
+$ based on GB-month
+can attach/detach from EC2s
+can have multiple attached to 1 inst.
+can even attach 1 EBS volume to multiple inst.s simultaneously, but not common
+EBS replicates volumes across multiple physical devices, but only within the AZ
+
+---
+EBS VOLUME TYPE - GENERAL PURPOSE 
+
+GP2 and GP3 - GP = General Purpose
+just an SSD drive
+
+IO CREDIT ARCHITECTURE:
+basically, you have a certain # of IO credits
+IO credit = 16KB - basically just 1 IOPS (IOPS assume 16KB block) - 1 IO in 1 second
+EBS volumes have a "bucket" of IO credits - get created with an IO credit allocation
+- the bucket has 5.4MM IO credits. 
+- the bucket fills up autom.y at the "baseline performance" rate
+  - "Baseline Performance" - rate that the "bucket" fills up 
+  - each volume has a diff baseline performance, based on it's size
+    - but, all volumes also get a min. 100 IO credits per sec, regardless of size
+  - GP2 baseline = (3 IO credits per second for each GB of the volume's size)
+you use IO credits when doing IO on the volume. credits replenish over time (baseline)
+- if do more IO than the baseline performance, the bucket will deplete
+if you run out of IO credits, you can't do any more IO - you are BLOCKED
+you can burst - do more IOPS than than the incoming credits
+volume "bucket" starts off with full IO credits
+! volumes larger than 1TB use a diff IO credit architecture
+
+GP2 use cases
+- boot volumes, low-latency interactive apps, dev & test, general purpose
+
+GP3 architecture
+- does NOT have the credit bucket architecture
+- 3,000 IOPS & 125 MiB per second - STANDARD
+  - aka 3,000 16KB blocks input/output per second
+- can get extra - up to 16,000 IOPS or 1,000 MB/s
+  - extra $$ - you have to select this option. GP3 does not scale up to this autom.y
+- GP3 ends up ~20% cheaper than GP2
+- 4x faster max throughput than GP2 - 1,000 MB/s vs. just 250 MB/s
+
+GP3 use cases
+- virtual desktops, medium sized single instance DBs, + same use cases as GP2
+
+---
+EBS VOLUME TYPE - PROVISIONED IOPS SSD (IO1/IO2)
+
+for high performance, independent of volume size
+provides consistent low latency, and consistent variation in latency
+
+up to 64,000 IOPS per volume (4x GP2/3)
+Up to 1,000 MB/s throughput
+WITH BLOCK EXPRESS - very fast & performant!
+up to 256,000 IOPS per volume 
+up to 4,000 MB/s throughput
+
+! IOPS can be adjusted independent of size. can have small volumes that do high IOPS
+- applies to all io1/2/BlockExpress
+
+maxes:
+- io1 - 50 IOPS per GB
+- io2 - 500 IOPS per GB
+- BlockExpress - 1000 IOPS per GB
+
+per instance performance
+- ec2 inst. types have a different instance performance for IO to EBS volumes
+- instance performance is like a cap for IOPS - can't go faster than this
+- to hit this cap though, you would need to use multiple volumes
+
+use cases:
+- high performance, latency sensitive workloads, IO intensive nosql/sql DBs

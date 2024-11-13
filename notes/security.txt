@@ -1,0 +1,211 @@
+---
+KEY MANAGEMENT SERVICE (KMS)
+
+used by many AWS svcs
+
+regional & public service (AWS public zone)
+
+create, store, manage keys
+operates with both symmetric and asymmetric keys
+does encrypt & decrypt (and others...)
+! keys never leave KMS - keys are meant to be locked inside
+
+! provides FIPS 140-2 (*L2) standard
+- some features have L3 compliance
+- "KMS is a secure and resilient service that uses FIPS 140-2 validated hardware security modules to isolate and protect your keys"
+
+some KMS keys are called CMKs (Customer Master Keys) - old naming convention
+
+keys can be used by you, applications, & aws svcs
+
+"KMS Keys" are just containers for the physical real keys
+- has below fields:
+  - ID
+  - date
+  - policy
+  - desc
+  - state
+
+can generate or import keys
+
+keys themselves are encrypted when stored in KMS
+keys are decrypted before they encrypting/decrypting data
+
+on encrypt request, need to send data + key you want to use
+on decrypt request, do NOT need to specify the key to use
+- the key info is encoded in the cipher text. KMS can tell which one to use
+
+permissions:
+- encrypt, decrypt, key creation, etc. are all SEPARATE permissions
+  - called "role separation"
+  - key administrator has diff perm.s than IAM users that use the key
+    - key admins can delete the key
+
+KMS keys can encrypt MAX 4KB of data
+KMS can generate DEKs (Data Encryption Keys) using KMS keys - GenerateDataKey operation
+DEKs can encrpyt/decrypt data >4KB
+DEKs are linked to the KMS key that created it
+- the DEK knows which key created it
+KMS gives DEKs to the client - YOU or the SERVICE uses the DEK
+- DEKs are NOT stored in KMS
+
+DEK architecture
+1. user requests DEK from KMS
+2. DEK is created (using a KMS key) (GenerateDataKey)
+3. KMS gives user the plaintext DEK and the encrypted DEK
+  - DEK is encrypted using the same KMS key that generated it
+4. user encrypts their data (ex. s3 object) with the plaintext DEK
+5. user discards the plaintext DEK
+6. user stores the encrypted DEK with the newly encrypted data
+when need to decrypt data...
+7. user requests for DEK decryption - send encrypted DEK to KMS
+8. KMS decrypts the DEK using the same KMS key used to generate it
+9. user uses decrypted DEK to decrypt the data
+10. user discards the decrypted DEK
+
+you can encrypt many objects/data with 1 DEK, or use a new DEK for each object/data
+
+default = KMS keys are isolated in a region - CANNOT move a key to different region
+- can't extract a key from the KMS service either
+- KMS aliases are also regional
+multi-region keys can be used (key replicated across regions)
+- relatively new feature
+
+customer owned keys:
+- type 1: AWS managed - created automatically when using a svc that integrates w/KMS
+- type 2: customer managed - created explicitly by customer for application/AWS svc usage
+
+all keys can be rotated 
+- off by default for cust. managed keys
+- on by default for AWS managed keys (you can't turn off)
+- done yearly when turned on
+backing keys are kept so old data can still be decrypted
+
+every key has a Key Policy (resource policy - like S3 bucket policies)
+you must explicitly configure KMS to trust the account that the key is created in via key policy
+- this trust isn't automatic, like it is with resources in other svcs
+- need to do this before granting access to a key via identity policies
+- kinda like the "allow all public access" feature in S3 - gotta do it twice
+- ex. identity policy usually allows encrypt/decrypt for all KMS keys, while the key policy specifies what exact principals are allowed to encrypt, decrypt, create, etc.
+
+Key Policy from demo
+{
+    "Id": "key-consolepolicy-3",
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "Enable IAM User Permissions",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::711387134335:root"
+            },
+            "Action": "kms:*",
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow access for Key Administrators",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::711387134335:user/iamadmin"
+            },
+            "Action": [
+                "kms:Create*",
+                "kms:Describe*",
+                "kms:Enable*",
+                "kms:List*",
+                "kms:Put*",
+                "kms:Update*",
+                "kms:Revoke*",
+                "kms:Disable*",
+                "kms:Get*",
+                "kms:Delete*",
+                "kms:TagResource",
+                "kms:UntagResource",
+                "kms:ScheduleKeyDeletion",
+                "kms:CancelKeyDeletion",
+                "kms:RotateKeyOnDemand"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow use of the key",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::711387134335:user/iamadmin"
+            },
+            "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "Allow attachment of persistent resources",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::711387134335:user/iamadmin"
+            },
+            "Action": [
+                "kms:CreateGrant",
+                "kms:ListGrants",
+                "kms:RevokeGrant"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "Bool": {
+                    "kms:GrantIsForAWSResource": "true"
+                }
+            }
+        }
+    ]
+}
+
+---
+CLOUDHSM
+
+HSM - Hardware Security Module
+- these are hardware devices to store keys
+- they are used outside of AWS - just hardware devices companies use on-prem
+
+concept similar to KMS - stores and managed security keys
+AWS manages KMS though - they do have some level of access to your things.
+
+CloudHSM provides a truly "single tenant" HSM
+- with KMS, it's multi-tenant - you are using a shared service, possibly hardware too
+- cloud HSM - AWS provisions you a cloud HSM, but YOU manage everything
+  - if you lose access, AWS can NOT get you back in - they have 0 access
+
+CHSM provides FIPS 140-2 Level 3 security
+- KMS is level 2 overall, some L3
+- FIPS = Federal Information Processing Standard Publication (FIPS PUB)
+  - US govt. computer security standard used to approve cryptographic modules
+
+accessed using industry standard APIs - not AWS apis
+- PKCS#11, Java Cryptography Extensions (JCE), Microsoft CryptoNG (CNG) libraries
+
+integration - KMS can use cloudHSM as a "custom key store"
+
+ARCHITECTURE
+- not cluster by default - need to deploy 1 in each AZ
+  - default is just 1 phys. device in 1 AZ
+  - replication in cluster is still taken care of by AWS - don't need to configure
+    - keeps keys/policies in sync when nodes are added/removed
+- each provisioned HSM instance get an ENI
+- ENI is injected into your private VPC subnet
+- instances can use the ENI to interact with the cloudHSM
+  - for HA, inst.s should be able to load balance between all ENIs in each AZ
+- AWS CloudHSM Client needs to be installed on each inst. to interact
+  - the CloudHSM Client uses "industry standard APIs" (mentioned above)
+- AWS provision the HSM, but still have NO ACCESS to the secure physical area where key material is held
+
+USE CASES
+- no native AWS integration - ex. can't use for S3 SSE
+  - could do client side encry.n though and send to S3 (S3 CSE)
+- offload SSL/TLS processing for web servers
+- for Oracle DBs - can do Transparent Data Encryption (TDE) feature
+- protect the private keys for a CA (if you have your own CA that issues certs)
+
+

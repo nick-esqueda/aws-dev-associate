@@ -326,6 +326,52 @@ Key Policy from demo
 }
 
 ---
+CLOUDHSM
+
+HSM - Hardware Security Module
+- these are hardware devices to store keys
+- they are used outside of AWS - just hardware devices companies use on-prem
+
+concept similar to KMS - stores and managed security keys
+AWS manages KMS though - they do have some level of access to your things.
+
+CloudHSM provides a truly "single tenant" HSM
+- with KMS, it's multi-tenant - you are using a shared service, possibly hardware too
+- cloud HSM - AWS provisions you a cloud HSM, but YOU manage everything
+  - if you lose access, AWS can NOT get you back in - they have 0 access
+
+CHSM provides FIPS 140-2 Level 3 security
+- KMS is level 2 overall, some L3
+- FIPS = Federal Information Processing Standard Publication (FIPS PUB)
+  - US govt. computer security standard used to approve cryptographic modules
+
+accessed using industry standard APIs - not AWS apis
+- PKCS#11, Java Cryptography Extensions (JCE), Microsoft CryptoNG (CNG) libraries
+
+integration - KMS can use cloudHSM as a "custom key store"
+
+ARCHITECTURE
+- not cluster by default - need to deploy 1 in each AZ
+  - default is just 1 phys. device in 1 AZ
+  - replication in cluster is still taken care of by AWS - don't need to configure
+    - keeps keys/policies in sync when nodes are added/removed
+- each provisioned HSM instance get an ENI
+- ENI is injected into your private VPC subnet
+- instances can use the ENI to interact with the cloudHSM
+  - for HA, inst.s should be able to load balance between all ENIs in each AZ
+- AWS CloudHSM Client needs to be installed on each inst. to interact
+  - the CloudHSM Client uses "industry standard APIs" (mentioned above)
+- AWS provision the HSM, but still have NO ACCESS to the secure physical area where key material is held
+
+USE CASES
+- no native AWS integration - ex. can't use for S3 SSE
+  - could do client side encry.n though and send to S3 (S3 CSE)
+- offload SSL/TLS processing for web servers
+- for Oracle DBs - can do Transparent Data Encryption (TDE) feature
+- protect the private keys for a CA (if you have your own CA that issues certs)
+
+
+---
 S3 OBJECT ENCRYPTION CSE/SSE
 
 ! buckets are not encrypted! objects are.
