@@ -1,0 +1,196 @@
+---
+CLOUDWATCH ARCHITECTURE
+
+metrics - ingestion, storage, and management of metrics
+
+public service - accessed from AWS and on-prem env.s
+aws services are integrated - can comm. with management plane natively
+need an agent on the EC2 to gather metrics on things "inside" the instance
+- ex. app metrics, anything related to software running on the inst.
+on-prem integration - can use the CW agent, or use API directly
+application integration with CW agent or API
+view all data from the console UI, CLI, or API
+alarms based on metric values
+telemetry
+
+public services in a VPC can connect to CW through an IGW (with public IP)
+private inst.s can connect using an Interface Endpoint (don't need a public IP)
+
+terms:
+namespace = container for metrics
+  - ex. AWS/EC2, AWS/Lambda
+  - AWS namespaces have "AWS/" at the start - custom ones you make won't.
+  - just separates the metrics into buckets
+datapoint = timestamp, value, (optional) unit of measure (ex. percentage)
+  - the thing that is actually sent the CW to track the metric
+metric = time ordered set of data points
+  - ex. CPUUtilization, NetworkIn, DiskWriteBytes
+  - every metric has a MetricName (ex. CPUUtilization) and Namespace (ex. AWS/EC2)
+dimension = name/value pair - provided when adding a datapoint into CW
+  - this is how to differentiate metrics for different EC2 inst.s, for example
+  - ex. CPUUtilization Name=InstanceId, Value=i-1111111 (inst1)
+  - ex. CPUUtilization Name=InstanceId, Value=i-2222222 (inst2)
+  - CW metrics are "flat", all grouped together in a namespace by metric name.
+    - all EC2 inst.s will log to AWS/EC2 CPUUtilization. differentiate using dimensions
+  - dimensions let you group/aggregate to see related data. 
+    - ex. CPU for EC2 instance1
+    - ex. CPU for all EC2s in an ASG
+  - AWS adds some dimensions too when sending datapoints to a metric
+    - ex. AutoScalingGroupName, ImageId, InstanceId, InstanceType
+resolution = the granularity which datapoints offer
+  - standard resolution = 60s
+  - high resolution = 1s
+  - each datapoint would be valid for that whole resolution time frame
+    - ex. CPU is 50% for the entire minute between 5:45-5:46 - can't see more granular
+    - this means you can request a metric for multiples of that resolution only
+retention = amount of time datapoints are stored at a certain resolution
+  - resolution < 60s - retained for 3hrs
+  - 60s - retained for 15d
+  - 300s (5min) - retained for 63 days
+  - 3600s (1hr) - retained for 455 days
+  - as data ages, it gets aggregated into a lower resolution, and stored for longer
+    - think like s3 intelligent tiering - pipeline downwards
+    - "as data ages, the detail matters less and less"
+statistic = aggregation over a period/resolution
+  - ex. min, max, sum, avg
+percentile = represents the relative standing of a value in a data set
+  - can get the percentile for a metric
+  - ex. get p95 of CPUUtilization to remove outliers and see normal values
+
+alarms:
+- watches a metric over a time period
+- either ALARM or OK state - based on threshold
+  - also INSUFFICIENT DATA
+- ex. if CPUUtilization is above 50% for 2 periods of 60s, then go to ALARM state
+- triggers actions
+  - trigger SNS notifications
+  - use in ASG scaling policy
+  - EventBridge to start event driven workflows
+- alarm resolution
+  - if metric has higher resolution, you can have a higher resolution alarm
+
+---
+CLOUDWATCH LOGS ARCHITECTURE
+
+2 sides of CWLogs - Ingestion, and Subscription
+
+! CWLogs is the default answer for any questions involving logging in AWS
+
+public service
+regional service 
+- sending logging data to CWLogs in same region svc is in
+- NOTE: global svcs (R53) send to us-east-1 CWLogs
+store, monitor, access log data
+can log from AWS, on-prem, IOT devices, or any application
+supports native ingestion of AWS service logs
+need CWAgent to ingest from on-prem systems or applications
+can ingest logging from VPC flow logs
+can ingest CloudTrail log information
+- remember CloudTrail covers account-level events and AWS API calls
+can logs Route53 DNS requests
+ex. EB, Lambda, API GW, ECS Container logs
+
+INGESTION
+log event = has a Timestamp, and Raw Message
+log stream = sequence of log events sharing the same exact source
+  - can come from multiple Logging Sources - ex. many EC2s from same log file
+  - ex. 1 log stream for each EC2 instance
+log group = groups log streams
+  - ex. /var/log/messages for a group of EC2 inst.s
+  - represents the "thing being monitored" - ex. /var/log/messages in general
+  - retention, perm.s, and encr.n are configured at log group level
+    - encry.n provided by KMS
+    - default retention is forever - can limit that to save costs
+metric filter = scans all log streams in a log group for a specific pattern
+  - you configure the pattern to look for certain things occurring
+  - the metric filter feeds into a normal CW metric for tracking
+  - can trigger alarms from that metric
+  - ex. scanning log files for failed SSH attempts into EC2 - trigger alarm for that
+
+can export/save CWLogs to S3 using the S3 Export feature (Create-Export-Task)
+! NOT REALTIME - can take up to 12 hours
+- cannot encrypt with SSE-KMS - only SSE-S3
+
+SUBSCRIPTION
+create Subscription Filter, which filters the info from log group that will be sub.d
+Sub.n Filter can send to different destinations/pipelines
+- Kinesis Data Firehose - NEAR Realtime delivery of logs to S3 - NOT REAL TIME
+- AWS managed lambda function to deliver to Elasticsearch - real time
+- Custom lambda function to export data to any destination you want - real time
+- deliver to kinesis data stream - real time
+  - allows data to be used within other systems that integrate with KCL
+aggregation:
+  - can use subscription filters to aggregate logs from multiple accounts/regions
+  - ex. sub.n filter from 3 accts pointing to a Kinesis Data Stream in 1 acct
+    - that acct can send the data stream to Kinesis Data Firehose to persist in S3
+    - logs can then be used by any analytics systems
+
+---
+AWS X-RAY
+
+distributed tracing application
+tracks sessions through an application (serverless, distributed apps)
+
+tracing header = unique trace ID used to track the request through the distributed app
+- first svc that gets hit generates and sends this header
+  - referred to as the "first stage"
+segments = blocks of data sent by each service - 1 svc sends a segment
+  - contains host/ip, request, response, work done (times), any issues
+subsegments = more granular segments - can see calls to other svcs as part of a segment
+service graph = details svcs and resources that make up the whole app (JSON document)
+service map = visual version of the service graph - shows traces
+
+x-ray agent is installed on EC2, ECS tasks, lambda (enable the option), beanstalk, API GW (per stage option), SNS, SQS
+
+requires IAM perm.s to log into the x-ray service
+- execution roles, etc.
+
+---
+VPC FLOW LOGS
+
+product that allows to monitor VPC traffic
+can see packet source/destination IP and ports, and more
+can NOT see packet contents. need a packet sniffer for that
+3 ways to enable and capture logs:
+- attach to VPC - all ENIs in that VPC
+- subnet - all ENIs in that subnet
+- ENIs - just one specific ENI
+! NOT REAL TIME!
+log destinations:
+- S3 - can read log files directly, integrate with 3rd party monitoring thing
+  - can use S3 Athena to query the logs in S3 - only pay for what's read
+- CWLogs - can integrate that with other AWS products - access via console or API
+can capture metadata on accepted, rejected, or all connections
+
+Flow Log Records:
+values captured (* indicates commonly used/important):
+- version
+- account-id
+- interface-id
+* srcaddr
+* dstaddr
+* srcport
+* dstport
+* protocol
+  - protocols have a protocol number associated with them. the # is value for this.
+  - ICMP = 1
+  - TCP = 6
+  - UDP = 17
+- packets
+- bytes
+- start
+- end
+* action
+  - ACCEPT or REJECT
+- log-status
+
+if using a NACL, you may see 2 logs for the same connection, b/c NACLs are stateless
+- ex. if 1st log is ACCEPT and 2nd is REJECT, then maybe the NACL allows inbound request but not outbound response
+- indicates both a NACL and SG are used (?)
+
+will only see 1 log for an SG since they see req/resp as 1 thing
+
+! some traffic is NOT recorded to VPC flow logs
+- metadata service running in the EC2 instance
+- DHCP / amazon DNS server traffic
+- amazon windows license server traffic
