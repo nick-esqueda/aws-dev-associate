@@ -56,31 +56,201 @@ Event Bus = like a constant flow of information
 
 Event examples: clicks, errors, criteria met, uploads, actions, etc...
 
-
 ---
 AWS LAMBDA
 
 FaaS = Function as a Service
 Function = just a piece of code lambda will run
 key part of serverless/event driven architectures
+"lambda function" = can be thought of as the lambda code + it's configuration
 
 need to define which runtime the function needs (ex. python3.8)
 need to define resources/memory the function can use
 - vCPU is allocated indirectly (it's based on memory allocation/usage)
+  - i.e. you don't get pick the vCPU allocation
 entire runtime env. starts up on function invocation
 functions are stateless - brand new env on each invocation
+- entire new runtime env spins up on each invocation, then gets torn down once ended
+runtime environment aka execution context
 
 $$ based on duration of function per invocation (& runtime env used)
 
 ! Docker is an ANTI-PATTERN for lambda(?)
 but lambda supports using Docker images - distinct from the word "Docker" though
 - can build images specifically for use in lambda environment
+  - i.e. images used for Docker and images used for Lambda are 2 diff things
+  - they just share existing Docker build processes to build images for Lambda
 
-function timeout = 15m - can't run longer than 15m
+common runtimes - python, ruby, java, go, C#
+custom runtimes, like Rust, are possible using lambda layers
+
+mem allocation - can allocate from 128MB to 10240MB of mem for a function
+storage - 512MB (default) storage allocated as /tmp in the runtime env
+- can configure up to 10240MB for storage
+! still just temporary memory, doesn't live past the lambda function execution
+
+! function timeout = 15m - can't run longer than 15m
+
+execution role - role attached to function to allow perm.s to other svcs
 
 Common Uses
-- Serverless Applications (S3, API Gateway, Lambda - together can make a serverless app)
+- Serverless Applications (S3, API Gateway, Lambda together can make a serverless app)
 - File Processing (s3, s3 events, lambda)
 - database triggers (dynamoDB, streams, lambda)
 - serverless cron (eventbridge/cwevents + lambda)
-- realtime stream data processing (kinesis + lambda)
+- realtime stream data processing (kinesis + lambda) 
+  - invoked when data added to kinesis stream
+
+NETWORKING - PUBLIC LAMBDA
+- default: fn.s are given public networking.
+- can access public AWS svcs and the public internet, assuming authN/authZ is config.d
+- public networking has best performance, b/c no customer specific VPC networking is required. fn.s run on shared hardware and networking, not specific to customers
+- however, this means lambda CAN'T access resources in a VPC, unless they have public IPs and allow external access
+
+NETWORKING - PRIVATE LAMBDA
+- lambda is config.d to run in a private subnet
+- obeys all VPC networking rules, as if it were just another svc in the network
+- can consume other svcs in the subnet, assuming access is allowed
+- can't access things outside the VPC, unless config.d in the network
+- can use VPC Endpoint to provide access to other AWS svcs, ex. DynamoDB, same as you'd do with other things in a VPC
+- treat like anything else inside a VPC!
+- technically...
+  - the lambda fn. exists in the AWS Lambda Service VPC
+  - ENIs get created and injected into your VPC subnets
+    - 1 ENI per unique combination of SGs and subnets used by ALL your lambda functions
+  - ENIs are created WHEN you configure the lambda fn. 
+    - 90s setup - no invocation delay (as opposed to creating ENI on each invocation)
+    - done only once, modified when updating configuration if needed
+  - historically:
+    - an ENI was created on EACH fn. execution. 
+    - was bad for performance/fn. runtime and scalability - filled up the VPC with ENIs
+
+SECURITY
+execution role = lambda assumes an execution role. gets perm.s based on permissions policy of role
+- trust policy trusts lambda, perm.s policy is used for temp. cred.s to interact with other resources
+resource policy = allows AWS services or external acct.s to invoke the fn.
+- can't be modified via console UI - only CLI or API (? verify)
+
+LOGGING
+logs from lambda executions go to CWLogs by default! don't need to conf
+- output goes into a log group with the same name as the lambda fn.
+metrics (invocation success/failure, retries, latency) - go to CloudWatch
+lambda can be integrated with X-Ray for distribution tracing
+CWLogs requires perm.s via execution role
+- AWS has a managed policy/role specifically designed for this
+
+WAYS TO INVOKE FUNCTIONS:
+- synchronous invocation - client waits for response data for failure
+  - CLI/API invoking the fn. - CLI/API waits for a response from fn.
+  - used if lambda is used by API Gateway - client waits for response
+  - errors or retries have to be handled within the client!
+- asynchronous invocation
+  - typically used when AWS svcs invoke lambda fn.s
+  - ex. S3 bucket with S3 Events enabled
+    - S3 upload causes event to trigger lambda - S3 doesn't wait for response
+  - lambda handles retries on errors (can configure between 0-2 retries)
+    ! fn. must be idempotent - re-running fn. should cause the same output every time
+    ! you'll get weird results if you don't make the fn. idempotent!
+  - after all automatic retries, can send event to dead letter queues for processing
+  - can send successful/failed events to "destinations" - SQS, SNS, Lambda, EventBridge
+- event source mappings
+  - an Event Source Mapping polls a source for events, and sends event batches to fn.
+  - typically used on streams or queues that don't support event generation to invoke lambda (ex. kinesis, dynamoDB streams, SQS)
+  - ex. pulling a batch from Kinesis Data Stream and sending event batches to fn.s 
+  - the lambda execution role needs perm.s to the data source (ex. kinesis)
+    - b/c the Event Source Mapping uses the execution role on lambda's behalf to retrieve data
+  - failed event batches can go to dead letter queue - SQS queues or SNS topics
+
+LAMBDA VERSIONS
+- can define versions of lambda fn.s - v1, v2, v3
+- version is the code + fn. configuration (runtime env, etc.)
+- versions are immutable - once change is published, can't change it
+  - each version has an ARN pointing to it!
+- $Latest - points to the latest fn. version
+- aliases - points at a version. like git tags
+  - ex. DEV, STAGE, PROD
+
+LAMBDA STARTUP
+- cold start = the entire execution context has to be spun up + execute code
+  - have to have cold start if no recent events
+- warm start = recently run execution context is reused to run the new event
+  - speeds up the fn. execution a lot since runtime is already there
+- lambda invocations can reuse execution contexts
+  - if used infrequently though, the context will be removed. next has to be cold start
+  ! each fn. should assume it can't reuse the context though - stateless
+  ! concurrent executions create new contexts - 20 simult.s req.s = 20 cold starts
+  - provisioned concurrency = can tell AWS to keep X contexts warm & ready to use
+    - improved start speeds, maybe if deploying a PROD release and want pre-made envs
+- can use the /tmp dir like a cache for new invocations
+  - can store things that other invocations can use, if the exec. context is reused
+  ! fn. should still assume that the data won't be in /tmp though. just a psuedo-cache
+
+
+---
+EVENTBRIDGE / CLOUDWATCH EVENTS
+
+event bridge is replacing CWEvents - has a superset of CWEvents functionality
+
+event example - ec2 instance termination or restart or startup
+
+key concepts
+- if X happens, or at Y time(s), do Z
+- there's a default event bus for each acc.t
+- all services that generate an event send the event to the bus
+  - (e.g. move from start to stop state)
+- Event Bus = just a stream of events. can route events to 1+ targets
+- can add additional busses
+- supports event destnations to 3rd parties
+- Event Bridge monitors all events passing through busses it can see
+- Rule = determines what happens to events - send to targets when pattern matches
+  - you configure these rules - linked to a specific event bus
+  - pattern matching rule = matches patterns of the events themselves 
+  - schedule rules = match cron formatted times/time ranges
+    - rule is executed when time matches
+- events get sent to all targets in parallel (assuming you config.d >1 target in rule)
+- events are in JSON format. that JSON gets sent to the target
+
+example event:
+{
+  "version": "0",
+  "id": "7bf73129-1428-4cd3-a780-95db273d1602",
+  "detail-type": "EC2 Instance State-change Notification",
+  "source": "aws.ec2",
+  "account": "123456789012",
+  "time": "2015-11-11T21:29:54Z",
+  "region": "us-east-1",
+  "resources": ["arn:aws:ec2:us-east-1:123456789012:instance/i-abcd1111"],
+  "detail": {
+    "instance-id": "i-abcd1111",
+    "state": "pending"
+  }
+}
+
+---
+SIMPLE NOTIFICATION SERVICE (SNS)
+
+HA, durable, secure, pub-sub messaging service
+regionally resilient - data is replicated in the region
+capable of SSE - on-disk encryption
+public service - need public internet connectivity with public endpoint
+- svcs in a VPC can access SNS if they have public internet access
+coordaintes sending and delivery of messages
+message payload can be <=256KB 
+
+Topics = the base entity of SNS
+- perm.s and configs are set on topics
+
+Publishers/Subscribers
+- publishers send messages to a certain topic, and sub.s that are subbed to the topic receive those messages
+- subsribers can be - HTTP endpoints, email, SQS queues, mobile PN, SMS msgs, lambda
+- subscribers can apply filters, so that it only recieves messages from that topic that are paricular to it's functionality
+
+Fanout architecture
+- single SNS topic with multiple SQS queues as subscribers
+- useful for processing the same thing in diff ways
+  - ex. processing a video at diff resolutions
+
+delivery status - can get status of delivery
+  - for supported subscribers - HTTP endpoints, lambda, SQS
+delivery retries - reliable delivery
+topic policy - like a bucket policy that allows you to specify what entities have acess to that topic (ex. cross-account)
