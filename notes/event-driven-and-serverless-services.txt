@@ -242,11 +242,11 @@ Topics = the base entity of SNS
 
 Publishers/Subscribers
 - publishers send messages to a certain topic, and sub.s that are subbed to the topic receive those messages
-- subsribers can be - HTTP endpoints, email, SQS queues, mobile PN, SMS msgs, lambda
+- subsribers can be - HTTP endpoints, email, SQS queues, mobile PN, text msgs, lambda
 - subscribers can apply filters, so that it only recieves messages from that topic that are paricular to it's functionality
 
 Fanout architecture
-- single SNS topic with multiple SQS queues as subscribers
+- ex. single SNS topic with multiple SQS queues as subscribers
 - useful for processing the same thing in diff ways
   - ex. processing a video at diff resolutions
 
@@ -254,3 +254,239 @@ delivery status - can get status of delivery
   - for supported subscribers - HTTP endpoints, lambda, SQS
 delivery retries - reliable delivery
 topic policy - like a bucket policy that allows you to specify what entities have acess to that topic (ex. cross-account)
+
+---
+SIMPLE QUEUE SERVICE (SQS)
+
+public service - AWS public zone, can hit public endpoints with right perm.s
+2 types of queues- standard or FIFO
+- FIFO = first in first out ALWAYS
+- standard = best-effort FIFO - it's possible to get msgs out of order from the queue
+msgs can be max 256KB
+- if large data is involved, can just link to that data in the message instead
+  - ex. put large obj in S3 and put link to that S3 obj in msg
+SQS does regional replication & is resilient by default
+queue policy - allows access from external accts (just a resource policy)
+
+HOW IT WORKS
+msgs are placed on a queue
+services poll the queue to get & process the next message
+- this means you can control the workload throttling from the reciever/server side
+when polled, msgs are HIDDEN
+- they are NOT deleted until service says to delete it once done w/processing
+- msgs are hidden based on the "VisibilityTimeout"
+  - if VisibilityTimeout is up and isn't deleted yet, it can re-appear on the queue
+  - allows for retries
+  - VisibilityTimeout is configurable - 0-12hrs, default 30s
+    - can be changed per queue OR per msg - "ChangeMessageVisibility" operation
+can send problem msgs to Dead-Letter Queues
+- ex. if msg reappers 5 times w/o deletion, then msg goes to the DLQ
+- DLQs are useful if problem msgs need to be processed in a different way
+ASGs can scale based on queue length
+Lambdas can be invoked when msgs appear on the queue
+
+SNS AND SQS FANOUT ARCHITECTURE EXAMPLE
+video upload and transcode to diff video sizes
+components:
+  - "web pool" - pool of EC2s inside an ASG
+    - this ASG will scale based on incoming browser client load 
+  - 1 SNS topic
+  - 3 SQS queues sub.d to SNS topic
+    - 1 queue for each video size (480p, 720p. 1080p)
+  - 3 ASGs with EC2s in each for video processing
+    - 1 ASG for each video size (480p, 720p. 1080p)
+    - the EC2s in each ASG poll form their respective queue
+    - each ASG can scale independently of each other, and independ of web pool
+- client makes req to web pool to upload video
+- web pool inst.s put the user's video in S3 (full size video)
+- web pool inst. sends msg to SNS topic
+  - msg has link to video in S3
+- SNS pushes the msg to all 3 SQS queues
+- EC2s in each ASG poll from their queue to start transcoding
+  - pulls orig. video from S3 bucket
+- once transcode is done, put in a diff S3 bucket
+- web pool can get the diff video sizes from the S3 bucket
+
+STANDARD VS FIFO QUEUE
+standard 
+  - like a multi-lane highway
+  - "at-least-once" delivery
+    - means it's possible for a msg to be received/proccessed twice!
+    - duplicate message delivery
+  - "best-effort ordering" - order is not quaranteed
+  - scales virtually infinitely - can "keep adding lanes"
+fifo 
+  - like a 1 lane highway
+  - "exactly-once" delivery
+    - means msg will only appear/get processed ONCE
+  - doesn't scale well - "only 1 lane"
+    - 3,000 msgs per sec w/batching, up to 300 msgs per sec w/o batching
+    - batching = each transaction can contain 10 msgs. 1 req = batch of msgs
+  - misc: queue must have a ".fifo" suffix 
+
+billed on "requests" (polling, not messages)
+- 1 req = 1-10 msgs up to 64KB total
+- less cost effective the more you poll SQS
+short polling - uses 1 request, returns 0 or more msgs
+- still consumes a request even if 0 returned msgs
+- takes up a lot of requests to keep the queue empty (target state - process msgs asap)
+long polling - get to use the waitTimeSeconds value
+- if 0 msgs on queue, the request will wait "waitTimeSeconds" for a msg to arrive
+  - max 20s
+- you SHOULD use long polling
+
+msgs can stay up to 14 days on queue
+- supports encryption at rest using KMS, since data could stay there for a while
+- encrypted in transit by default between queue and clients
+
+SQS EXTENDED CLIENT LIBRARY
+- use when handling msgs over SQS max (256KB)
+- all this is just a workaround for the hard 256KB limit - uses S3 as a workaround
+- the extended client library stores large payloads in S3 when sending msg to Queue
+  - msgs up to 2GB in size instead of 256KB
+- when sending msg to queue, SQS uploads to S3, stores link in msg
+- receiving the msg: SQS loads the large payload from S3 and sends whole thing to svc
+- payload in S3 is deleted when deleting msg from queue
+
+SQS DELAY QUEUES
+- any queue with the "DelaySeconds" value is a Delay Queue
+- DelaySeconds min=0, max=15m
+- when msg is added to queue, it will be HIDDEN for DelaySeconds duration
+  - when doing ReceiveMessage, 0 msgs will be returned, since the msg is hidden
+- (audio example) like the attack time on an envelope
+- useful if want to wait a few seconds after customer does an action for some reason
+- Message timer = per-message invisibility - overrides the delay queue setting
+  - ! message timers are not supported on fifo queues
+
+DEAD-LETTER QUEUES
+- aims to address problem where msg stays on a queue infinitely (ex. poll, processing fails, visibility timeout up, poll, processsing fails, vis. timeout up, ...)
+- ReceiveCount value tracks how many times a msg was received before deletion
+  - will increment when msg re-appears after Visibility Timeout and is polled again
+- Redrive policy = defines source queue, DLQ, and conditions for msgs to move to DLQ
+  - when ReceiveCount > maxReceiveCount && msg isn't deleted, msg will move to DLQ
+! retention period still applies to DLQs
+  ! enqueue timestamp is when msg was added to original queue, NOT the DLQ
+  - retention period of DLQs are typically set longer than source queues
+- multiple source queues can send to one DLQ
+
+---
+AWS STEP FUNCTIONS
+
+addresses some limitations/design decisions of Lambda
+the base entity of Step Functions are "state machines"
+- can have multiple state machines
+state machine = long-running serverless workflows
+serverless workflow ex. - START -> STATE1 -> STATE2 -> ... -> END
+states are "THINGS which occur" inside a workflow
+maximum duration of a state machine = 1 YEAR
+- long max duration b/c used for complex workflows that may involve human intervention
+2 types of workflows
+- Standard Workflow - default for most use cases - 1 YEAR max duration
+- Express Workflow
+machine can be started via APIGW, EventBridge, Lambda, manually, etc.
+uses Amazon States Language (ASL) - JSON template to create a state machine
+use IAM roles for perms, so state machine can access AWS resources
+
+STATES
+state machines just coordinate the work occurring
+states control flow through the state machines
+TASK states coordinate with other services to perform the actual work
+can think of states like control flow in code
+
+states:
+- SUCCEED
+- FAIL
+- WAIT - wait for certain duration or date/time before proceeding
+- CHOICE - like if/else based on input data
+- PARALLEL - branch out and execute >1 things at the same time
+- MAP - do something for each item in and input list
+- TASK - where the actual work is done
+  - integrate with AWS svcs
+
+
+---
+API GATEWAY
+
+managed API gateway service
+highly available & scalable
+create and manage APIs on APIGW
+single entrypoint for applications
+sits between client apps and backend svcs (aka "integrations" - AWS svcs)
+features:
+- authZ
+- throttling (aka rate-limiting)
+- caching
+- CORS handling
+- transformations
+- OpenAPI spec to define APIs
+- direct integration with AWS svcs
+can connect to svcs/endpoints in AWS, or on-prem, anywhere
+supports HTTP APIs, REST APIs, WebSocket APIs
+useful if migrating backend services from on-prem to cloud (ex.) 
+- API stays same, and can throttle/switch requests to new/migrated backend svc
+
+request steps - authorize -> validate -> transform
+response steps - return <- prepare <- transform
+
+API = a bundle of API endpoints (think APIM API or APIGEE proxy)
+Resource = like a path inside the API (ex. /api/v1/something)
+Method = the HTTP method + backend integration settings
+  - get/post/put/etc.
+
+
+CWLogs can store and manage req/rsp logs
+CW can store metrics for client & backend logs
+
+API Cache can be used to make rsp times faster for clients + reduce req.s to backend
+
+AUTHENTICATION
+Cognito:
+- client authenticates with Cognito, receives a token, and sends token in req to APIGW
+  - APIGW verifies the token by talking with Cognito (this is native functionality)
+  - req proceedes to backend integration
+Custom auth:
+- can use a custom lambda "authorizer" to do auth on req.s
+  - client sends bearer token in req to APIGW
+  - APIGW calls lambda authorizer
+  - lambda authorizer can make call to an identity provider or do custom compute for auth
+  - lambda authorizer returns IAM policy and principal identifier
+  - req proceedes to backend integration
+- can also config to use no auth
+
+ENDPOINT TYPES
+- Edge-optimized - req.s get routed to the nearest CloudFront Point of Presence (POP)
+  - uses CloudFront's global network - fast
+- Regional - scalable & highly available within region
+- Private - endpoint only accessible within a VPC via interface endpoint - totally private
+
+STAGES
+APIs in APIGW are deployed to "stages" - each stage has 1 deployment
+can have diff stage for PROD and DEV
+has diff endpoints - "api.catagram.io/prod" vs "api.catagram.io/dev" 
+stage example: v1 of an API might be deployed to PROD stage, while v2 is in DEV stage
+can rollback stages to old deployments
+canary deployments:
+- each stage has a canary (if enabled) - allows you to throttle new API versions
+- once deploying to stage, it will deploy to the canary
+- certain % of traffic will go to canary (you config the %)
+  - can adjust the % over time, then promote the canary to be the new "base stage"
+- can always rollback to base stage if canary is showing issues
+
+MISC STATUS CODES 
+- 429 Too Many Requests = exceeded throttle - APIGW can "throttle" req.s (aka rate limit)
+- 502 Bad Gateway = bad output returned by backend integration
+- 503 Service Unavailable - maybe backend endpoint is offline/can't connect
+- 504 Integration Failure/Timeout - backend rsp time is above >29s APIGW limit
+  ! even though lambda max run time is 15m, if it's behind an APIGW, still 29s limit
+
+CACHING
+config.d per stage
+reduces load & !cost! on backend svcs, improves performance
+calls are only made to backends on cache miss
+! cache can be encrypted
+overall cache size - 500MB up to 237GB
+TTL:
+- default 300s
+- min 0, max 3600s
+
+
