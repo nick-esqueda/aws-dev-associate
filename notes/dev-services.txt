@@ -62,7 +62,8 @@ AWS CODEBUILD
 "Build as a Service" - fully managed
 like jenkins, but don't have to configure a build server extensively
 pay only for the resources consumed during builds
-uses docker for build env (can customize by using custom docker image for build env.)
+uses docker for build env 
+- this means you can customize it by using a custom docker image for build env.
 integrates with KMS, IAM, VPC, CloudTrail, S3, more
 ! customized via buildspec.yml (put in root of source repo)
 store build logs in S3 and/or CWLogs
@@ -75,14 +76,17 @@ build project = main unit
 - contains build environments
 
 buildspec.yml
+- (can optionally rename this file - have to specify in build project configs though)
 - 4 main phases in the buildspec file
   - install: install pckgs into the build env (NOT for code dependencies)
-  - pre_build: install code dependencies, sign-in to things if needed
+  - pre_build: install code dependencies, login to things (i.e. ECR/docker login)
   - build: commands run during the build process
   - post_bulid: package things up, push images to image repos, send notif.s, etc.
 - set env variables in buildspec file
   - integrates with SSM parameter-store & secrets manager
 - artifacts section - what stuff to put where
+  - you don't need to use Artifacts if just pushing docker image to ECR
+    - this is a separate thing outside of Artifacts
 
 ---
 AWS CODEDEPLOY
