@@ -1,0 +1,113 @@
+---
+CI/CD
+
+svcs for each ci/cd phase:
+code - AWS CodeCommit
+build - AWS CodeBuild
+test - AWS CodeBuild
+deploy - AWS CodeDeploy
+AWS CodePipeline orchestrates the above svcs into a development pipeline
+
+1 pipeline per branch
+
+buildspec.yml/.json = config for CodeBuild
+appspec.yml/.json = config for CodeDeploy
+both above may be used by CodePipeline
+
+CodeDeploy
+- can deploy to:
+  - ec2, beanstalk, ecs, ecs (blue/green deployment), AWS opsworks, AWS Service Catalog or Alex Skills Kit
+- can deploy the build artifact into S3
+- can create/update a CloudFormation stack
+
+---
+AWS CODECOMMIT
+
+! this service is deprecated!!!
+
+like github - hosts repos
+
+you configure SSH keys for cloning in the IAM user settings
+or, generate HTTPS git credentials for an IAM user
+- you need to enter a username + pwd when git clone-ing a codecommit repo
+
+can send notif.s on repo events (commits, PRs, approvals, etc)
+
+triggers = allow you to run event-driven actions/workflows on repo events
+- this is a different thing from notif.s, but functionally similar
+- can trigger lambda to run any code
+
+authZ on repo actions is controlled thru identity policies on IAM users
+- like repo access, certain repo actions, etc.
+
+---
+AWS CODEPIPELINE
+
+continuous delivery tool
+orchestration/glue for codecommit/codebuild/codedeploy
+
+pipelines are build from "stages" (like build, test, vuln. scans, etc)
+stages can have parallel or sequential ACTIONS
+can make pipeline pause and require approval before going to next stage
+stages create artifacts
+- "input artifact", "output artifact"
+- store artifacts in s3
+- you pipe the output artifact of one stage into the next
+! all pipeline/stage/action state changes send an event to the EventBridge bus
+- can config a lambda to react to these changes in build state
+
+---
+AWS CODEBUILD
+
+"Build as a Service" - fully managed
+like jenkins, but don't have to configure a build server extensively
+pay only for the resources consumed during builds
+uses docker for build env (can customize by using custom docker image for build env.)
+integrates with KMS, IAM, VPC, CloudTrail, S3, more
+! customized via buildspec.yml (put in root of source repo)
+store build logs in S3 and/or CWLogs
+metrics with cloudwatch
+build events sent to EventBridge - can trigger event-driven workflos
+control build projects thru CLI, SDK, or CodePipeline UI console
+build artifacts go to S3
+
+build project = main unit
+- contains build environments
+
+buildspec.yml
+- 4 main phases in the buildspec file
+  - install: install pckgs into the build env (NOT for code dependencies)
+  - pre_build: install code dependencies, sign-in to things if needed
+  - build: commands run during the build process
+  - post_bulid: package things up, push images to image repos, send notif.s, etc.
+- set env variables in buildspec file
+  - integrates with SSM parameter-store & secrets manager
+- artifacts section - what stuff to put where
+
+---
+AWS CODEDEPLOY
+
+code deployment as a service
+alternative to jenkins/ansible/chef/puppet/cloudformation
+capable of deploying to - EC2, on-prem servers, lambda, ECS
+can do more than code - deploy web apps, configs, .exe files, scripts, media, more
+! agent needs to be installed on EC2 or on-prem servers to integrate with CodeDeploy
+
+appspec.yml
+- manage/configure deployments - how deployments occur on the target
+- "files" section - for EC2/on-prem deployments - what files to install on target
+- "permissions" section - for EC2/on-prem deployments - what perm.s for installed files
+- "resources" section - for ECS/Lambda deployments - config settings for these svcs
+- lifecycle event hooks: run something when event happens
+  - each hook runs a script if EC2/on-prem, runs a lambda fn. if ECS/Lambda
+  - ApplicationStop: runs before application is downloaded. prep for actual dpeloyment
+  - DownloadBundle: when codedeploy agent copies artifact down to temp location
+  - BeforeInstall: for any pre-install tasks (decrypt files, perform backups, etc.)
+  - Install: CodeDeploy agent copies app files from temp location to final dest. folder
+    - you can't run any script during this step! this is handled by CodeDeploy agent
+  - AfterInstall: perform post-install steps (app configs, change file perm.s, licensing)
+  - ApplicationStart: typically used for restarting/start any svcs stopped during ApplicatoinStop
+  - ValidateService: ! where you verify deployment was completed successfully
+    - how CodeDeploy determines if deployment was successful or not
+! remember order & names of above deployment lifecycle
+
