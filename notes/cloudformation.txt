@@ -1,0 +1,255 @@
+---
+WAIT CONDITIONS & CFN-SIGNAL
+
+by default, logical reources will show CREATE_COMPLETE even if your app is not bootstrapped up yet
+- e.g. app deployment on an EC2 may be starting up after EC2 is up and running. CFN will show CREATE_COMPLETE - it doesn't know your app is starting up
+- e.g. using the UserData section on an EC2 logical resource - script takes long time
+wait conditions and cfn-signal help solve above issue
+
+CFN-SIGNAL
+cfn-signal command = part of aws-cfn-bootstrap package
+helps configure CFN to HOLD/wait for success signals
+runs on the actual inst., communicates success/fail back to CFN
+wait for X num. of success signals before considering CREATE_COMPLETE
+config. a timeout for those X succes signals
+- 12 hour max
+if X success signals received by CFN, then create_complete
+if failure signal received, resource & stack creation fails - CFN will know
+if timeout is reached, resource & stack creation fails - CFN will know
+
+CreationPolicy
+if a logical resource has a CreationPolicy or uses a WaitCondition (in the template), it can listen to cfn-signal
+AWS says to use CreationPolicy for EC2s or ASGs, because it's tied to that specific resource
+define the success signal count and timeout in the CreationPolicy section.
+- then, that logical resource will wait for those cfn-signal signals
+
+WaitConditions
+adds additional functionality to CreationPolicy way of doing it
+generally for more complex cfn templates
+WaitConditions are useful when integrating CFN with some external/on-prem IT system
+WaitConditions are their OWN logical resource, not something defined in an existing resource
+WCs can depend on other resources, and other resources can depend on it
+acts as a "general progress gate" that can't be passed until right signals are received
+WaitConditionHandle = a pre-signed URL that physical resources can comm. with
+- they are another separate logical resource 
+- pre-signed URL:
+  - credentials are config.d in the URL so caller doesn't need any cred.s
+  - used by phys. resource to send success/fail signals to
+  - phys. resource can also send JSON data back to the cfn template via pre-signed URL!
+    - data can be referenced inside the template itself! via !GetAtt WaitCondition.Data
+1. define WaitCondition in template
+2. define WaitConditionHandle
+3. reference WaitConditionHandle inside WaitCondition
+4. define Timeout and signal Count in WaitCondition
+5. phys. resource creation - stack will wait until WaitHandle gets the signal....
+6. phys. resource passes data thru the WaitHandle pre-signed URL
+7. data from signal can be populated where referenced in the template
+8. stack continues
+
+---
+NESTED STACKS
+
+stacks are standalone contained units. they are isolated from other stacks.
+all logical resources in a stack share the same lifecycle.
+normal standalone stacks are fine, but may run into some limit. that's where nested stacks OR cross-reference stacks help
+nested stacks encourage modular templates that can be reused across infrastructures
+
+! stacks can only have max 500 resources
+you can't reuse logical resources across many stacks
+- can't reference them - i.e. template only knows the resources in it's own template
+nested stacks allow you to overcome the 500 limit - each nested stack can have 500 each
+
+like a tree - "root stack" is the root node
+parent stack = any stack that has child stacks
+
+nested stacks are just normal stacks
+  - they have inputs and outputs like normal stacks
+have to reference the template URL in the parent stack for CFN to build it
+parameters - if the nested stack takes in parameters, have to supply those in the parent stack template
+  - if nested stack template has defaults for those param.s, then don't have to explicitly pass in
+nested stacks outputs
+outputs - nested stack can have outputs - can ref these in parent stack, and even pass to other nested stacks
+  ! ONLY nested stack OUTPUTS can be referenced. still can't ref the logical res.s in the nested
+nested stacks are just other logical resources
+  - "AWS::CloudFormation::Stack" resource type
+
+note: when reusing nested stack tempalate, you're reusing the template CODE, not the resources itself created in some other stack created by that template
+
+use nested stacks when:
+- the stack will form part of one solution
+- all stacks need to share the same lifecycle
+  ! if one needs to stay alive longer than the others, then need cross-stack references
+- you don't need to reference the logical resources directly (can make use of nested outputs)
+- you want to overcome 500 resource limit per stack
+- you want code reuse
+- make infra startup process easier - just run 1 root stack, and it orchestrates the rest
+
+...
+VPCSTACK:
+  Type: AWS::CloudFormation::Stack
+  Properties:
+    TemplateURL: https://someurl.com/template.yaml
+    Parameters:
+      Param1: !Ref SomeParam1
+      Param2: !Ref SomeParam2
+      Param3: !Ref SomeParam3
+...
+
+---
+CROSS-STACK REFERENCES
+
+a way you can references existing physical resources from another stack
+
+outputs can be EXPORTED. this makes them visible to other stacks
+- normally, stack outputs are not visible from other stacks
+exports are stored in a region in an account
+- export names must be unique in the region
+- each region in your acct has it's own dedicated list of exports
+- cross-region or cross-account exports are NOT supported
+Fn::ImportValue can be used in another template to get an exported output from another stack
+- have to use ImportValue instead of !Ref - !Ref is for ref.ing within same template
+
+example: a shared VPC stack - ci/cd pipeline deploys code via CFN to that other stack's VPC to test
+
+cross-stack ref.s are for reusing resources inside a stack,
+nested stacks are for reusing templates
+
+use when:
+- service oriented architectures
+- stacks must have diff. lifecycles
+- reuse stack resources
+
+...
+Outputs: # Mostly normal outputs section...
+  SHAREDVPCID:
+    Description: Shared Services VPC
+    Value: !Ref SomeVPC
+    Export: # ! this Export section is what stores the output in the region's exports list
+      Name: SHAREDVPCID # must be acct+regionally unique
+...
+
+---
+STACK SETS
+
+deploy stacks across any acct.s & regions
+each stack still runs as normal, in 1 region in 1 acct
+
+terminology:
+- admin account = the acct. where the stackset is. just used to manage the whole stackset
+- target account = an acct. where the stacks will actually run - stackset targets these
+- stack instance = references a real stack running in a target acct
+  - these are different from stacks - these are just ref.s to the real one
+  - exist just to record what happens to each stackset stack in every region/acct
+  - are put in the target acct/region
+  - kind of like an agent to report back to the admin acct / stackset
+  - stacks are only spun up once the stack instances are created
+- concurrent accounts = number of accts that will have stacks deployed in them at a time
+  - instead of deploying to all at once - slows deploy down, but is more stable
+- failure tolerance = how many stack inst.s can fail before stackset is considered failed
+- retain stacks = if true, deleting stack inst. doesn't delete real stack - it stays running in each acct/region
+  - by default, deleting the stack inst. deletes the real stack
+
+stacksets deploy stacks in other acct.s via roles
+- can use service-managed or self-managed roles
+- service-managed perm.s are used as part of an AWS org, which target acct.s are members of
+- can target organizational units (OUs) or specific acct.s
+
+the template for a stackset is just a normal CFN template
+- the stackset deploys the SAME template/stack to each acct/region
+
+useful scenarios:
+- to enable AWS Config
+- AWS Config rules - configure MFA, EIPS, EBS Encryption, etc.
+- create IAM roles at scale instead of 1 by 1 per acct
+- create roles for cross-account access
+
+---
+DELETION POLICY
+
+by default, if deleting a logical res. from stack or deleting whole stack, all data is deleted
+- e.g. all RDS DB data, EB volume data, etc. 
+
+DeletionPolicy allows you to keep the data
+
+can define DeletionPolicy on each res. in a template
+DeletionPolicy options:
+- Delete (default)
+- Retain (don't delete the resource after logical resource/stack deletion)
+  - works for any resource
+- Snapshot (take a snapshot of the resource before deleting it)
+  - only for supported resources: ebs volumes, elasticache, RDS, redshift, neptune
+  - NOT supported on EC2, have to do on the EBS volume
+
+! be careful: you keep the data, so have to pay normal $$ for it
+
+! only applies to DELETE operations, not replace
+- example: changing a property of a res. that causes it to be replaced
+
+---
+STACK ROLES
+
+allows stacks to get the perm.s they need to work w/phys. res.s without the identity creating the stack having those perm.s
+i.e. a way to allow identities to interact with res.s through CFN ONLY
+
+! good way to implement role separation
+
+normally CFN uses the perm.s of the LOGGED IN IDENTITY to create physical res.s
+- e.g. your perm.s when you log into the console and create a stack
+but, what if you (the user who logged in) don't have those perm.s?
+instead, CFN could use & assume a role to get the right perm.s without logged-in identity needing them. this is what a stack role is for
+the identity creating the stack only needs the PassRole perm.s - doesn't need resource perm.s
+
+1. gabby (acct admin) creates an IAM role
+  - IAM role has perm.s to CRUD the res.s used by template
+2. gabby gives phil perm.s to CRUD stacks AND to pass the role (PassRole)
+  - phil should NOT have perm.s to edit OR assume the role - role separation
+  - phil should NOT have perm.s to manipulate phys. res.s
+3. phil uses the IAM role when creating the stack
+4. role is used by the stack to perform operations on phys. res.s
+
+---
+CLOUDFORMATION INIT (CFN-INIT)
+
+helps with bootstrapping your app on EC2 (easier compared to the UserData feature of EC2)
+- UserData - procedural/imperative way - have to list all commands (HOW)
+- cfn-init - declarative way - specify WHAT you want, cfn-init does the implementation 
+note: specific to ec2 instances
+
+you specify resource metadata under the logical res. in a template/stack
+- resource metadata = what the inst. needs for bootstrapping
+cfn-init on the EC2 can pull that metadata from the template and perform bootstrapping
+idempotent - re-running cfn-init X times will result in same final state
+- cfn-init can see what things are installed on the EC2 and not install them again
+
+! only cfn-init runs ONCE - if you update/change the stack & reapply, cfn-init won't run
+
+with cfn-signal: cfn-signal comm.s to the stack based on the status code of cfn-init
+
+/var/log/cloud-init-output.log stores bootstrapping logs - if any app startup issues, check here
+- shows the output of the UserData bootstrapping process - any commands in UserData will be shown
+- useful even if not using cfn-init - any UserData commands will log here
+
+/var/log/cfn-init-cmd.log
+- shows everything cfn-init did - e.g. sudo yum install output logs
+
+/var/log/cfn-init.log
+- shows high-level info on what cfn-init did
+
+---
+CFN-HUP
+
+helper tool that can run configurable actions when a change in resource metadata is detected
+- aka a daemon watching for changes in logical resource metadata in the stack
+since cfn-init only runs ONCE, you can use cfn-hup to re-run cfn-init if you update the metadata
+
+! have to install and manage cfn-hup on the inst. yourself (cfn manages cfn-init though)
+
+
+---
+MISC NOTES
+
+if you update the UserData section of a logical resource, the inst. will be stopped & started again
+- aka "update with disruption"
+- happens even if part of the UserData uses a placeholder for template parameters
+- note that your script in UserData will NOT run on EC2 again, even with the change in UserData
+! update with disruption will cause EC2 inst.s to lose their IP and get assigned a new one
