@@ -388,11 +388,22 @@ kind of viewed at as DNS-as-a-Service
 
 hosted zones can be public or private
 - logically, AWS nameservers are hosted on the public part of AWS
+- public hosted zones can be accessed by public internet or by VPCs via R53 resolver ("VPC +2" address)
 - private hosted zones are hosted and only accessible in a VPC
   - for sensitive DNS records
 
 if you delete & recreate a hosted zone for a domain in AWS, you get 4 brand new nameservers to host the zone - different from the original nameservers
 - you can reassign it to the earlier nameservers by modifying the settings in AWS console
+
+domains can be registered by an external service (e.g. squarespace) but hosted on an AWS hosted zone
+- have to update the NS records in the 
+1. create a domain via some external registrar
+2. create hosted zone in AWS
+3. update the NS records in the registrar's interface to point to the name servers in the AWS hosted zone
+
+AWS charges you for:
+1. hosting the zone file on the hosted zone
+2. queries made to the hosted zone
 
 ---
 MISC DNS NOTES
@@ -430,3 +441,4 @@ TTL: numeric value set on DNS records
   - this allows DNS resolvers to respond to clients with "non-authoritative" answers to DNS queries
 - some resolver servers can be configured to ignore TTL values
 - sometimes leads to caching issues if changing DNS records/etc. - resolvers used cached values instead of pointing to the newest record's value (e.g. ip address)
+

@@ -225,6 +225,8 @@ idempotent - re-running cfn-init X times will result in same final state
 
 with cfn-signal: cfn-signal comm.s to the stack based on the status code of cfn-init
 
+logs are stored in /var/log for cfn-init/UserData debugging.
+
 /var/log/cloud-init-output.log stores bootstrapping logs - if any app startup issues, check here
 - shows the output of the UserData bootstrapping process - any commands in UserData will be shown
 - useful even if not using cfn-init - any UserData commands will log here
@@ -243,6 +245,86 @@ helper tool that can run configurable actions when a change in resource metadata
 since cfn-init only runs ONCE, you can use cfn-hup to re-run cfn-init if you update the metadata
 
 ! have to install and manage cfn-hup on the inst. yourself (cfn manages cfn-init though)
+
+
+---
+CHANGESETS
+
+What is it?
+- ChangeSets are the equivalent of PRs but for CFN Stack changes
+  - you can see the "diff" or change between the existing Stack and new Stack version, if applied
+- they allow you to preview what changes a new version of a template would apply to the stack
+  - normally, you update a stack by uploading a template and applying it to the stack w/o really knowing what it'll change
+  - with a ChangeSet, you can see exactly what will change if applied.
+
+ChangeSets are separate entities from Stacks
+You can have lots of ChangeSets with different template versions
+They can be deleted or applied to the Stack
+
+Why is it useful?
+- update stack operations cause -> no interruption, some interruption, or full replacement
+- interruptions/replacement could cause system outages
+- you should see clearly when something will be interrupted
+- useful for change management
+
+How to use it?
+1. go to stack
+2. use "create change set" button or "create change set for current stack" under the Stack Actions dropdown
+3. fill out form, upload the new version of the template
+  - UI is very similar to if you were to update the stack without a change set
+4. UI will create changeset - wait for ChangeSet to be in "CREATE_COMPLETE" state
+  - the stack will NOT be updated. only the ChangeSet has been created.
+5. view changes btwn Stack and ChangeSet in the Changes and JSON Changes tab
+  - JSON Changes - list of JSON objects - 1 per change
+6. if want to apply, click "Execute" on the ChangeSet (else click "Delete" or just leave it alone)
+  - the Stack will start changing according to the new version of the template in the ChangeSet. ChangeSet changes will be applied
+
+---
+CUSTOM RESOURCES
+
+What is it?
+- Custom Resources are CFNs way of letting you integrate with things that aren't (or won't be) supported by CFN
+
+Why is it useful?
+- some AWS services and features aren't natively supported by CFN. Custom Resources allows you to work with them still
+- can configure unsupported features yourself
+- can provision non-AWS resources with CFN
+
+How does it work?
+- you define a Custom Resource in a CFN template
+- Custom Resources are "backed" by a Lambda fn or an SNS topic
+- the backing lambda/sns topic is used to perform whatever logic/actions you want 
+- the lambda/sns topic is also used to comm. with the Stack about custom resource status (communicate CREATE_COMPLETE, send events to lambda, etc.)
+
+Example:
+- S3 bucket delete scenario (S3 bucket stack resources CANNOT be deleted if they have objects in them. Will fail. Must be empty first.)
+1. have a template with S3 resource and Custom Resource (to add/delete bucket objects)
+2. stack creates s3 bucket
+3. stack sends event (with bucket name and "Response URL") to the backing Lambda fn
+4. the lambda fn puts objects in to the s3 bucket
+5. lambda fn responds "CREATE_COMPLETE" to the stack via the Response URL
+6. more objects are put into the S3 bucket over time...
+7. stack delete initiated
+8. stack sends event to lambda resource with delete info
+  - since Custom Resource depends on S3 bucket, stack knows to delete it first, in order. 
+9. backing lambda deletes the bucket objects (has custom code to watch for deletion event)
+10. lambda fn comm.s "DELETE_SUCCESS" to stack via Response URL
+11. stack initiates s3 bucket deletion
+12. bucket deletes successfully, since bucket is empty, b/c of Custom Resource lambda
+  - remember: buckets will FAIL to delete if objs are in bucket. known limitation of CFN + S3.
+
+Template example:
+...
+Resources:
+  ...
+  copyobjectstobucket:
+    Type: Custom::S3Objects
+    Properties:
+      ServiceToken: !GetAtt CopyS3ObjectsLambdaFunction.Arn # reference to the fn that backs the custom resource
+      ... (custom properties here - they go in the event & get passed to the backing lambda)...
+  ...
+...
+
 
 
 ---
